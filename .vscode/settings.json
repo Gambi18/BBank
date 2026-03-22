@@ -1,0 +1,63 @@
+{
+  "sqltools.connections": [
+    {
+      "mysqlOptions": {
+        "authProtocol": "default",
+        "enableSsl": "Disabled"
+      },
+      "ssh": "Disabled",
+      "previewLimit": 50,
+      "server": "localhost",
+      "port": 3306,
+      "driver": "MySQL",
+      "database": "careglide",
+      "username": "admin",
+      "name": "CareGlide"
+    },
+    {
+      "ssh": "Disabled",
+      "previewLimit": 50,
+      "server": "localhost",
+      "port": 5432,
+      "driver": "PostgreSQL",
+      "username": "postgres",
+      "password": "2323",
+      "database": "postgres",
+      "name": "postgres"
+    },
+    {
+      "ssh": "Disabled",
+      "previewLimit": 50,
+      "server": "localhost",
+      "port": 5432,
+      "driver": "PostgreSQL",
+      "name": "Docker_postgres",
+      "database": "postgres",
+      "username": "postgres",
+      "password": "2323"
+    },
+    {
+      "ssh": "Disabled",
+      "previewLimit": 50,
+      "server": "localhost",
+      "port": 5432,
+      "driver": "PostgreSQL",
+      "name": "BBank",
+      "database": "bbank",
+      "username": "charlie",
+      "password": "2323"
+    },
+    {
+      "ssh": "Disabled",
+      "previewLimit": 50,
+      "server": "localhost",
+      "port": 5433,
+      "driver": "PostgreSQL",
+      "database": "bbank",
+      "username": "admin",
+      "password": "2323",
+      "name": "bbank"
+    }
+  ],
+  "cSpell.words": ["appt", "bbank", "charliehelen", "pexels"]
+}

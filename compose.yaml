@@ -1,0 +1,32 @@
+services:
+  goapp:
+    container_name: goapp
+    image: goapp:1.0.0
+    build:
+      context: ./backend
+      dockerfile: go.dockerfile
+    environment:
+      DATABASE_URL: 'postgres://admin:2323@db:5432/bbank?sslmode=disable'
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+  db:
+    image: postgres:18  # or :18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: 2323
+      POSTGRES_DB: bbank
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql   # ← Changed: mount parent dir
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U charlie"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
