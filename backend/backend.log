@@ -1,0 +1,3 @@
+Connected using DSN: postgres://admin:2323@db:5433/bbank?sslmode=disable
+2026/04/29 14:24:25 dial tcp: lookup db on 127.0.0.53:53: server misbehaving
+exit status 1

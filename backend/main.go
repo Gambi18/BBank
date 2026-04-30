@@ -27,41 +27,30 @@ type Donor struct {
 	LastDonation string `json:"last_donation"`
 }
 
-type Admin struct {
-	Id           int    `json:"id"`
-	Organization string `json:"organization"`
-	NPI          string `json:"npi"`
-	Email        string `json:"email"`
-	Password     string `json:"password"`
-}
-
 type Request struct {
-	Id        int    `json:"id"`
-	DonorId   int    `json:"donor_id"`
-	AdminId   int    `json:"admin_id"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"created_at"`
+	Id           int    `json:"id"`
+	DonorId      int    `json:"donor_id"`
+	DonorName    string `json:"donor_name"`
+	LastDonation string `json:"last_donation"`
+	CreatedAt    string `json:"created_at"`
 }
 
 type Appointment struct {
 	Id              int    `json:"id"`
 	RequestId       int    `json:"request_id"`
 	DonorId         int    `json:"donor_id"`
-	AdminId         int    `json:"admin_id"`
+	DonorName       string `json:"donor_name"`
 	AppointmentDate string `json:"appointment_date"`
-	Status          string `json:"status"`
 }
 
 const (
-	donorsEndpoint       = "/api/go/donors"
-	donorIDEndpoint      = "/api/go/donors/{id}"
-	adminsEndpoint       = "/api/go/admins"
-	adminIDEndpoint      = "/api/go/admins/{id}"
-	requestsEndpoint      = "/api/go/requests"
-	requestIDEndpoint     = "/api/go/requests/{id}"
+	donorsEndpoint         = "/api/go/donors"
+	donorIDEndpoint        = "/api/go/donors/{id}"
+	requestsEndpoint       = "/api/go/requests"
+	requestIDEndpoint      = "/api/go/requests/{id}"
 	confirmRequestEndpoint = "/api/go/requests/{id}/confirm"
-	appointmentsEndpoint  = "/api/go/appointments"
-	appointmentIDEndpoint = "/api/go/appointments/{id}"
+	appointmentsEndpoint   = "/api/go/appointments"
+	appointmentIDEndpoint  = "/api/go/appointments/{id}"
 )
 
 func main() {
@@ -100,27 +89,19 @@ func main() {
 			password TEXT,
 			last_donation DATE
 		)`,
-		`CREATE TABLE IF NOT EXISTS admins (
-			id SERIAL PRIMARY KEY,
-			organization TEXT,
-			npi TEXT,
-			email TEXT UNIQUE,
-			password TEXT
-		)`,
 		`CREATE TABLE IF NOT EXISTS requests (
 			id SERIAL PRIMARY KEY,
 			donor_id INTEGER REFERENCES donors(id),
-			admin_id INTEGER REFERENCES admins(id),
-			status TEXT DEFAULT 'pending',
+			donor_name TEXT,
+			last_donation DATE,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS appointments (
 			id SERIAL PRIMARY KEY,
 			request_id INTEGER REFERENCES requests(id),
 			donor_id INTEGER REFERENCES donors(id),
-			admin_id INTEGER REFERENCES admins(id),
-			appointment_date DATE,
-			status TEXT DEFAULT 'scheduled'
+			donor_name TEXT,
+			appointment_date DATE
 		)`,
 	}
 
@@ -140,13 +121,6 @@ func main() {
 	router.HandleFunc(donorIDEndpoint, getDonor(db)).Methods("GET")
 	router.HandleFunc(donorIDEndpoint, updateDonor(db)).Methods("PUT")
 	router.HandleFunc(donorIDEndpoint, deleteDonor(db)).Methods("DELETE")
-
-	// Admin routes
-	router.HandleFunc(adminsEndpoint, getAdmins(db)).Methods("GET")
-	router.HandleFunc(adminsEndpoint, createAdmin(db)).Methods("POST")
-	router.HandleFunc(adminIDEndpoint, getAdmin(db)).Methods("GET")
-	router.HandleFunc(adminIDEndpoint, updateAdmin(db)).Methods("PUT")
-	router.HandleFunc(adminIDEndpoint, deleteAdmin(db)).Methods("DELETE")
 
 	// Request routes
 	router.HandleFunc(requestsEndpoint, getRequests(db)).Methods("GET")
@@ -200,11 +174,13 @@ func getDonors(db *sql.DB) http.HandlerFunc {
 		donors := []Donor{}
 		for rows.Next() {
 			var d Donor
-			err := rows.Scan(&d.Id, &d.FullName, &d.Email, &d.DOB, &d.Gender, &d.BloodGroup, &d.Rhesus, &d.Contact, &d.Address, &d.Password, &d.LastDonation)
+			var lastDonation sql.NullString
+			err := rows.Scan(&d.Id, &d.FullName, &d.Email, &d.DOB, &d.Gender, &d.BloodGroup, &d.Rhesus, &d.Contact, &d.Address, &d.Password, &lastDonation)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			d.LastDonation = lastDonation.String
 			donors = append(donors, d)
 		}
 		json.NewEncoder(w).Encode(donors)
@@ -215,12 +191,14 @@ func getDonor(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := mux.Vars(r)["id"]
 		var d Donor
+		var lastDonation sql.NullString
 		err := db.QueryRow("SELECT id, full_name, email, dob, gender, blood_group, rhesus, contact, address, password, last_donation FROM donors WHERE id = $1", id).
-			Scan(&d.Id, &d.FullName, &d.Email, &d.DOB, &d.Gender, &d.BloodGroup, &d.Rhesus, &d.Contact, &d.Address, &d.Password, &d.LastDonation)
+			Scan(&d.Id, &d.FullName, &d.Email, &d.DOB, &d.Gender, &d.BloodGroup, &d.Rhesus, &d.Contact, &d.Address, &d.Password, &lastDonation)
 		if err != nil {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
+		d.LastDonation = lastDonation.String
 		json.NewEncoder(w).Encode(d)
 	}
 }
@@ -232,8 +210,22 @@ func createDonor(db *sql.DB) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		var dob interface{}
+		if d.DOB == "" {
+			dob = nil
+		} else {
+			dob = d.DOB
+		}
+
+		var lastDonation interface{}
+		if d.LastDonation == "" {
+			lastDonation = nil
+		} else {
+			lastDonation = d.LastDonation
+		}
+
 		err := db.QueryRow("INSERT INTO donors (full_name, email, dob, gender, blood_group, rhesus, contact, address, password, last_donation) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
-			d.FullName, d.Email, d.DOB, d.Gender, d.BloodGroup, d.Rhesus, d.Contact, d.Address, d.Password, d.LastDonation).Scan(&d.Id)
+			d.FullName, d.Email, dob, d.Gender, d.BloodGroup, d.Rhesus, d.Contact, d.Address, d.Password, lastDonation).Scan(&d.Id)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -275,91 +267,10 @@ func deleteDonor(db *sql.DB) http.HandlerFunc {
 	}
 }
 
-// Admin Handlers
-func getAdmins(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		rows, err := db.Query("SELECT id, organization, npi, email, password FROM admins")
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		defer rows.Close()
-		admins := []Admin{}
-		for rows.Next() {
-			var a Admin
-			if err := rows.Scan(&a.Id, &a.Organization, &a.NPI, &a.Email, &a.Password); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			admins = append(admins, a)
-		}
-		json.NewEncoder(w).Encode(admins)
-	}
-}
-
-func getAdmin(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id := mux.Vars(r)["id"]
-		var a Admin
-		err := db.QueryRow("SELECT id, organization, npi, email, password FROM admins WHERE id = $1", id).Scan(&a.Id, &a.Organization, &a.NPI, &a.Email, &a.Password)
-		if err != nil {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		json.NewEncoder(w).Encode(a)
-	}
-}
-
-func createAdmin(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var a Admin
-		if err := json.NewDecoder(r.Body).Decode(&a); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		err := db.QueryRow("INSERT INTO admins (organization, npi, email, password) VALUES ($1, $2, $3, $4) RETURNING id", a.Organization, a.NPI, a.Email, a.Password).Scan(&a.Id)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		json.NewEncoder(w).Encode(a)
-	}
-}
-
-func updateAdmin(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id := mux.Vars(r)["id"]
-		var a Admin
-		if err := json.NewDecoder(r.Body).Decode(&a); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		_, err := db.Exec("UPDATE admins SET organization=$1, npi=$2, email=$3, password=$4 WHERE id=$5", a.Organization, a.NPI, a.Email, a.Password, id)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		fmt.Sscanf(id, "%d", &a.Id)
-		json.NewEncoder(w).Encode(a)
-	}
-}
-
-func deleteAdmin(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id := mux.Vars(r)["id"]
-		_, err := db.Exec("DELETE FROM admins WHERE id = $1", id)
-		if err != nil {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		json.NewEncoder(w).Encode("Admin Deleted")
-	}
-}
-
 // Request Handlers
 func getRequests(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rows, err := db.Query("SELECT id, donor_id, admin_id, status, created_at FROM requests")
+		rows, err := db.Query("SELECT id, donor_id, donor_name, last_donation, created_at FROM requests")
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -368,10 +279,14 @@ func getRequests(db *sql.DB) http.HandlerFunc {
 		requests := []Request{}
 		for rows.Next() {
 			var req Request
-			if err := rows.Scan(&req.Id, &req.DonorId, &req.AdminId, &req.Status, &req.CreatedAt); err != nil {
+			var lastDonation sql.NullString
+			var createdAt sql.NullString
+			if err := rows.Scan(&req.Id, &req.DonorId, &req.DonorName, &lastDonation, &createdAt); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			req.LastDonation = lastDonation.String
+			req.CreatedAt = createdAt.String
 			requests = append(requests, req)
 		}
 		json.NewEncoder(w).Encode(requests)
@@ -382,11 +297,15 @@ func getRequest(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := mux.Vars(r)["id"]
 		var req Request
-		err := db.QueryRow("SELECT id, donor_id, admin_id, status, created_at FROM requests WHERE id = $1", id).Scan(&req.Id, &req.DonorId, &req.AdminId, &req.Status, &req.CreatedAt)
+		var lastDonation sql.NullString
+		var createdAt sql.NullString
+		err := db.QueryRow("SELECT id, donor_id, donor_name, last_donation, created_at FROM requests WHERE id = $1", id).Scan(&req.Id, &req.DonorId, &req.DonorName, &lastDonation, &createdAt)
 		if err != nil {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
+		req.LastDonation = lastDonation.String
+		req.CreatedAt = createdAt.String
 		json.NewEncoder(w).Encode(req)
 	}
 }
@@ -398,7 +317,17 @@ func createRequest(db *sql.DB) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		err := db.QueryRow("INSERT INTO requests (donor_id, admin_id) VALUES ($1, $2) RETURNING id", req.DonorId, req.AdminId).Scan(&req.Id)
+
+		// Fetch donor info - handle NULL last_donation
+		var lastDonation sql.NullString
+		err := db.QueryRow("SELECT full_name, last_donation FROM donors WHERE id = $1", req.DonorId).Scan(&req.DonorName, &lastDonation)
+		if err != nil {
+			http.Error(w, "Donor not found", http.StatusBadRequest)
+			return
+		}
+		req.LastDonation = lastDonation.String
+
+		err = db.QueryRow("INSERT INTO requests (donor_id, donor_name, last_donation) VALUES ($1, $2, $3) RETURNING id", req.DonorId, req.DonorName, lastDonation).Scan(&req.Id)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -421,23 +350,16 @@ func confirmRequest(db *sql.DB) http.HandlerFunc {
 
 		// 1. Get request details
 		var req Request
-		err := db.QueryRow("SELECT id, donor_id, admin_id FROM requests WHERE id = $1", id).Scan(&req.Id, &req.DonorId, &req.AdminId)
+		err := db.QueryRow("SELECT id, donor_id, donor_name FROM requests WHERE id = $1", id).Scan(&req.Id, &req.DonorId, &req.DonorName)
 		if err != nil {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 
-		// 2. Update request status
-		_, err = db.Exec("UPDATE requests SET status = 'confirmed' WHERE id = $1", id)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// 3. Create appointment
+		// 2. Create appointment
 		var appt Appointment
-		err = db.QueryRow("INSERT INTO appointments (request_id, donor_id, admin_id, appointment_date) VALUES ($1, $2, $3, $4) RETURNING id",
-			req.Id, req.DonorId, req.AdminId, payload.Date).Scan(&appt.Id)
+		err = db.QueryRow("INSERT INTO appointments (request_id, donor_id, donor_name, appointment_date) VALUES ($1, $2, $3, $4) RETURNING id",
+			req.Id, req.DonorId, req.DonorName, payload.Date).Scan(&appt.Id)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -445,9 +367,8 @@ func confirmRequest(db *sql.DB) http.HandlerFunc {
 
 		appt.RequestId = req.Id
 		appt.DonorId = req.DonorId
-		appt.AdminId = req.AdminId
+		appt.DonorName = req.DonorName
 		appt.AppointmentDate = payload.Date
-		appt.Status = "scheduled"
 
 		json.NewEncoder(w).Encode(appt)
 	}
@@ -456,7 +377,16 @@ func confirmRequest(db *sql.DB) http.HandlerFunc {
 // Appointment Handlers
 func getAppointments(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rows, err := db.Query("SELECT id, request_id, donor_id, admin_id, appointment_date, status FROM appointments")
+		donorId := r.URL.Query().Get("donor_id")
+		var rows *sql.Rows
+		var err error
+
+		if donorId != "" {
+			rows, err = db.Query("SELECT id, request_id, donor_id, donor_name, appointment_date FROM appointments WHERE donor_id = $1", donorId)
+		} else {
+			rows, err = db.Query("SELECT id, request_id, donor_id, donor_name, appointment_date FROM appointments")
+		}
+
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -465,7 +395,7 @@ func getAppointments(db *sql.DB) http.HandlerFunc {
 		appointments := []Appointment{}
 		for rows.Next() {
 			var appt Appointment
-			if err := rows.Scan(&appt.Id, &appt.RequestId, &appt.DonorId, &appt.AdminId, &appt.AppointmentDate, &appt.Status); err != nil {
+			if err := rows.Scan(&appt.Id, &appt.RequestId, &appt.DonorId, &appt.DonorName, &appt.AppointmentDate); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -478,12 +408,24 @@ func getAppointments(db *sql.DB) http.HandlerFunc {
 func getAppointment(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := mux.Vars(r)["id"]
+		donorId := r.URL.Query().Get("donor_id")
+
 		var appt Appointment
-		err := db.QueryRow("SELECT id, request_id, donor_id, admin_id, appointment_date, status FROM appointments WHERE id = $1", id).Scan(&appt.Id, &appt.RequestId, &appt.DonorId, &appt.AdminId, &appt.AppointmentDate, &appt.Status)
+		err := db.QueryRow("SELECT id, request_id, donor_id, donor_name, appointment_date FROM appointments WHERE id = $1", id).Scan(&appt.Id, &appt.RequestId, &appt.DonorId, &appt.DonorName, &appt.AppointmentDate)
 		if err != nil {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
+
+		if donorId != "" {
+			var dId int
+			fmt.Sscanf(donorId, "%d", &dId)
+			if appt.DonorId != dId {
+				http.Error(w, "Access denied", http.StatusForbidden)
+				return
+			}
+		}
+
 		json.NewEncoder(w).Encode(appt)
 	}
 }

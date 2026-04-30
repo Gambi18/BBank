@@ -1,6 +1,39 @@
 import Link from 'next/link'
+import { redirect } from 'next/navigation';
+
+interface Donor {
+    id: number;
+    email: string;
+    password: string;
+    [key: string]: any;
+}
 
 export default function login() {
+    async function handleLogin(formData: FormData) {
+        'use server'
+        const email = formData.get('email');
+        const password = formData.get('password');
+
+        // Hardcoded admin login
+        if (email === 'admin@admin.com' && password === 'admin') {
+            redirect('/admin');
+        }
+
+        // Check against donors
+        const res = await fetch('http://localhost:8000/api/go/donors', { cache: 'no-store' });
+        if (res.ok) {
+            const donors = await res.json();
+            const donor = donors.find((d: Donor) => d.email === email && d.password === password);
+            if (donor) {
+                redirect(`/donor/${donor.id}`);
+            } else {
+                redirect('/login?error=Invalid+email+or+password');
+            }
+        } else {
+            redirect('/login?error=System+error');
+        }
+    }
+
     return (
         <div className='lg:h-screen'>
             <div className="flex justify-center items-center text-center rounded lg:h-[calc(100vh-5rem)] w-full">
@@ -13,25 +46,9 @@ export default function login() {
 
                     <div className="card flex flex-col justify-center items-center bg-slate-900 text-white rounded-2xl p-5 lg:w-1/2">
                         <h2 className="text-xl font-semibold card-title border-b border-red-700 w-max justify-self-center text-center lg:hidden">Login</h2>
-                        <form action="submit" className="p-3  text-[1rem]">
-                            <div className="flex gap-0 justify-center">
-                                <div>
-                                    <input type="radio" name="type" id="admin" value="admin" className='hidden peer' required />
-                                    <label htmlFor="admin" className='flex font-bold items-center rounded-l-md px-10 py-2 my-5 text-[.8rem] bg-transparent border-2 border-red-600 text-red-600 cursor-pointer peer-checked:bg-red-600 peer-checked:text-white peer-checked:border-red-600 peer-checked:hover:bg-red-700 peer-checked:hover:border-red-700 transition-all duration-300 ease-in-out'>
-                                        <span className='uppercase '>Admin</span>
-                                    </label>
-                                </div>
-
-                                <div>
-                                    <input type="radio" name="type" id="donor" value="donor" className='hidden peer' required />
-                                    <label htmlFor="donor" className='flex font-bold items-center rounded-r-md px-10 py-2 my-5 text-[.8rem] bg-transparent border-2 border-red-600 text-red-600 cursor-pointer peer-checked:bg-red-600 peer-checked:text-white peer-checked:border-red-600 peer-checked:hover:bg-red-700 peer-checked:hover:border-red-700 transition-all duration-300 ease-in-out'>
-                                        <span className='uppercase '>Donor</span>
-                                    </label>
-                                </div>
-                            </div>
-
-                            <input type="email" placeholder="Email Address" className="bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5" />
-                            <input type="password" placeholder="Password" className="bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5" />
+                        <form action={handleLogin} className="p-3  text-[1rem]">
+                            <input type="email" name="email" placeholder="Email Address" className="bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5" required/>
+                            <input type="password" name="password" placeholder="Password" className="bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5" required/>
                             <button type='submit' className="bg-red-700 hover:bg-red-800 rounded-md px-10 py-2 my-5 border-2 border-red-700 text-gray-200 font-extrabold text-xl">Login</button>
                         </form>
                         <div className='text-[0.8rem]'>-OR-</div>

@@ -1,33 +1,51 @@
 import Link from 'next/link'
+import { redirect } from 'next/navigation';
 
 export default function signup() {
+    async function handleSignup(formData: FormData) {
+        'use server'
+
+        const rawFormData = {
+            full_name: formData.get('full_name'),
+            email: formData.get('email'),
+            password: formData.get('password'),
+            dob: formData.get('dob'),
+            gender: '',
+            blood_group: '',
+            rhesus: '',
+            contact: '',
+            address: '',
+            last_donation: '',
+        }
+
+        const res = await fetch('http://localhost:8000/api/go/donors', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(rawFormData),
+        })
+
+        if (res.ok) {
+            const data = await res.json();
+            redirect(`/donor/${data.id}?success=Successfully+created+account`);
+        } else {
+            console.error('Failed to create donor')
+            redirect('/signup?error=Failed+to+create+account');
+        }
+    }
+
     return (
         <div className='lg:h-screen'>
             <div className="flex justify-center items-center text-center rounded lg:h-[calc(100vh-5rem)] w-full">
                 <div className="flex w-4/5 bg-slate-700 rounded-2xl">
                     <div className="card bg-slate-900 text-white rounded-2xl p-5 lg:w-1/2">
                         <h2 className="text-xl font-semibold card-title border-b border-red-700 w-max justify-self-center text-center lg:hidden">Sign Up</h2>
-                        <form action="submit" className="p-3 text-[1rem]">
-                            <div className="flex gap-0 justify-center">
-                                <div>
-                                    <input type="radio" name="type" id="admin" value="admin" className='hidden peer' required/>
-                                    <label htmlFor="admin" className='flex font-bold items-center rounded-l-md px-10 py-2 my-5 text-[.8rem] bg-transparent border-2 border-red-600 text-red-600 cursor-pointer peer-checked:bg-red-600 peer-checked:text-white peer-checked:border-red-600 peer-checked:hover:bg-red-700 peer-checked:hover:border-red-700 transition-all duration-300 ease-in-out'>
-                                        <span className='uppercase '>Admin</span>
-                                    </label>
-                                </div>
-
-                                <div>
-                                    <input type="radio" name="type" id="donor" value="donor" className='hidden peer' required/>
-                                    <label htmlFor="donor" className='flex font-bold items-center rounded-r-md px-10 py-2 my-5 text-[.8rem] bg-transparent border-2 border-red-600 text-red-600 cursor-pointer peer-checked:bg-red-600 peer-checked:text-white peer-checked:border-red-600 peer-checked:hover:bg-red-700 peer-checked:hover:border-red-700 transition-all duration-300 ease-in-out'>
-                                        <span className='uppercase '>Donor</span>
-                                    </label>
-                                </div>
-                            </div>
-
-                            <input type="text" placeholder="Full Name" className="bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5" />
-                            <input type="date" placeholder="Date of Birth" className="bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5" />
-                            <input type="email" placeholder="Email Address" className="bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5" />
-                            <input type="password" placeholder="Password" className="bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5" />
+                        <form action={handleSignup} className="p-3 text-[1rem]">
+                            <input type="text" name="full_name" placeholder="Full Name" className="bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5" required />
+                            <input type="date" name="dob" placeholder="Date of Birth" className="bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5" required />
+                            <input type="email" name="email" placeholder="Email Address" className="bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5" required />
+                            <input type="password" name="password" placeholder="Password" className="bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5" required />
                             <button type='submit' className="bg-red-700 hover:bg-red-800 rounded-md px-10 py-2 my-5 border-2 border-red-700 text-gray-200 font-extrabold text-xl">Sign Up</button>
                         </form>
                         <div className='text-[0.8rem]'>-OR-</div>
