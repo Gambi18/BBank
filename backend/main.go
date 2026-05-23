@@ -98,7 +98,7 @@ func main() {
 		)`,
 		`CREATE TABLE IF NOT EXISTS appointments (
 			id SERIAL PRIMARY KEY,
-			request_id INTEGER REFERENCES requests(id),
+			request_id INTEGER,
 			donor_id INTEGER REFERENCES donors(id),
 			donor_name TEXT,
 			appointment_date DATE
@@ -356,7 +356,14 @@ func confirmRequest(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		// 2. Create appointment
+		// 2. Delete request first to avoid foreign key constraint
+		_, err = db.Exec("DELETE FROM requests WHERE id = $1", req.Id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// 3. Create appointment
 		var appt Appointment
 		err = db.QueryRow("INSERT INTO appointments (request_id, donor_id, donor_name, appointment_date) VALUES ($1, $2, $3, $4) RETURNING id",
 			req.Id, req.DonorId, req.DonorName, payload.Date).Scan(&appt.Id)

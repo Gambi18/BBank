@@ -23,21 +23,21 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql   # ← Changed: mount parent dir
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U charlie"]
+      test: ["CMD-SHELL", "pg_isready -U admin"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  # frontend:
-  #   container_name: bbank
-  #   image: bbank:1.0.0
-  #   build:
-  #     context: ./bbank
-  #     dockerfile: Dockerfile
-  #   ports:
-  #     - "3000:3000"
-  #   depends_on:
-  #     - goapp
+  frontend:
+    container_name: bbank
+    image: bbank:1.0.0
+    build:
+      context: ./bbank
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    depends_on:
+      - goapp
 
 volumes:
   postgres_data:
