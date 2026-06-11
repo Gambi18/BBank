@@ -1,39 +1,15 @@
 import React from 'react'
-import Link from 'next/link'
-import { FaGear } from 'react-icons/fa6'
+import SidebarNav from '@/components/SidebarNav'
 
 const layout = ({ children }: { children: React.ReactNode }) => {
     return (
-        <div className='inline-flex w-full font-inter bg-linear-180 h-screen bg-white to-red-900 m-0 p-0'>
-            
-            {/* Side bar */}
-            <div id="sidebar" className='flex flex-col gap-5 bg-slate-600 justify-between py-10 px-10 m-2 rounded-2xl'>
-                <div id="logo">
-                    <a href="#" className="text-white font-extrabold text-2xl"><span className="text-red-700">Blood</span>Bank</a>
-                </div>
-                <ul className='flex flex-col gap-11'>
-                    <li>
-                        <Link href="/admin" className='text-white hover:text-red-600 hover:shadow-xl hover:scale-105 hover:border-b-2 hover:border-red-700'>Dashboard</Link>
-                    </li>
-                    <li>
-                        <Link href="/admin/appointments" className='text-white hover:text-red-600 hover:shadow-xl hover:scale-105 hover:border-b-2 hover:border-red-700'>Appointments</Link>
-                    </li>
-                    <li>
-                        <Link href="/admin/requests" className='text-white hover:text-red-600 hover:shadow-xl hover:scale-105 hover:border-b-2 hover:border-red-700'>Requests</Link>
-                    </li>
-                    <li>
-                        <Link href="/admin/donors" className='text-white hover:text-red-600 hover:shadow-xl hover:scale-105 hover:border-b-2 hover:border-red-700'>Donors</Link>
-                    </li>
-                </ul>
-                <div className="account flex justify-center">
-                    <Link href="/admin/settings"><FaGear className='text-white hover:text-red-600 hover:shadow-xl hover:scale-105' /></Link>
-                </div>
-            </div>
-
-            {/* Main content */}
-            <div className="p-20 h-full w-full ">{children}</div>
+        <div className='flex w-full min-h-screen'>
+            <SidebarNav role="admin" />
+            <main className="flex-1 min-w-0 px-6 py-10 lg:px-12 overflow-y-auto">
+                <div className="mx-auto max-w-5xl">{children}</div>
+            </main>
         </div>
     )
 }
 
-export default layout 
+export default layout

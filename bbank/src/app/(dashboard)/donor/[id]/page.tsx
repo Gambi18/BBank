@@ -1,100 +1,169 @@
 import React from 'react'
-import { revalidatePath } from 'next/cache';
-import { redirect } from 'next/navigation';
+import { revalidatePath } from 'next/cache'
+import { redirect } from 'next/navigation'
+import Link from 'next/link'
+import {
+    FaUser, FaHeartPulse, FaCalendarCheck, FaDroplet, FaPen, FaArrowRight,
+} from 'react-icons/fa6'
+import { api } from '@/lib/api'
 
 interface Appointment {
-    id: number;
-    donor_id: number;
-    donor_name: string;
-    appointment_date: string;
+    id: number
+    donor_id: number
+    donor_name: string
+    appointment_date: string
 }
 
-async function DonorDetails({ params }: { params: { id: string } }) {
-    const { id } = await params;
-    
+const fmtDate = (d: string) =>
+    d ? new Date(d).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : null
+
+async function DonorDetails({ params }: { params: Promise<{ id: string }> }) {
+    const { id } = await params
+
     // Fetch donor data
-    const donorRes = await fetch(`http://localhost:8000/api/go/donors/${id}`, { cache: 'no-store' })
+    const donorRes = await fetch(api(`/api/go/donors/${id}`), { cache: 'no-store' })
     if (!donorRes.ok) {
         throw new Error(`Failed to fetch donor with ID ${id}`)
     }
     const donorData = await donorRes.json()
 
-    // Fetch appointments for this donor (Restricted visibility)
-    const appointmentsRes = await fetch(`http://localhost:8000/api/go/appointments?donor_id=${id}`, { cache: 'no-store' })
-    let appointments: Appointment[] = [];
+    // Fetch appointments for this donor (restricted visibility)
+    const appointmentsRes = await fetch(api(`/api/go/appointments?donor_id=${id}`), { cache: 'no-store' })
+    let appointments: Appointment[] = []
     if (appointmentsRes.ok) {
-        appointments = await appointmentsRes.json();
+        appointments = await appointmentsRes.json()
     }
 
     async function handleRequest() {
         'use server'
-        const res = await fetch('http://localhost:8000/api/go/requests', {
+        const res = await fetch(api('/api/go/requests'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                donor_id: parseInt(id)
-            })
-        });
+            body: JSON.stringify({ donor_id: parseInt(id) }),
+        })
 
         if (res.ok) {
-            revalidatePath(`/donor/${id}`);
-            redirect(`/donor/${id}?success=Request+successful!!`);
+            revalidatePath(`/donor/${id}`)
+            redirect(`/donor/${id}?success=Request+sent!+We+will+confirm+a+date+soon.`)
         } else {
-            console.error(await res.text());
-            redirect(`/donor/${id}?error=Failed+to+request+appointment`);
+            console.error(await res.text())
+            redirect(`/donor/${id}?error=Failed+to+request+appointment`)
         }
     }
 
+    const firstName = donorData.full_name?.split(' ')[0] || 'Donor'
+    const profileIncomplete = !donorData.blood_group || !donorData.contact
+
+    const infoRows = [
+        { label: 'Name', value: donorData.full_name },
+        { label: 'Email', value: donorData.email },
+        { label: 'Date of birth', value: fmtDate(donorData.dob) },
+        { label: 'Gender', value: donorData.gender },
+        { label: 'Contact', value: donorData.contact },
+        { label: 'Address', value: donorData.address },
+    ]
+
     return (
-        <div id="dashboard" className='flex gap-5 m-0 h-full justify-center w-full'>
-            <div className="left flex flex-col m-0 gap-5 w-1/2 h-full">
-                <div id="personal_info" className=' bg-slate-800 p-5 rounded-t-2xl h-1/2'>
-                    <h1 className='text-3xl font-bold text-center' >Personal Information</h1>
-                    <hr />
-                    <ul className="appointments-list flex flex-col gap-3 p-3">
-                        <li><span className="text-gray-500 text-[0.99rem]">Name:</span> <span className='text-white'>{donorData.full_name}</span></li>
-                        <li><span className="text-gray-500 text-[0.99rem]">Email:</span> <span className='text-white'>{donorData.email}</span></li>
-                        <li><span className="text-gray-500 text-[0.99rem]">Date of Birth:</span> <span className='text-white'>{donorData.dob}</span></li>
-                        <li><span className="text-gray-500 text-[0.99rem]">Gender:</span> <span className='text-white'>{donorData.gender}</span></li>
-                        <li><span className="text-gray-500 text-[0.99rem]">Contact:</span> <span className='text-white'>{donorData.contact}</span></li>
-                        <li><span className="text-gray-500 text-[0.99rem]">Address:</span> <span className='text-white'>{donorData.address}</span></li>
-                    </ul>
+        <div className="animate-fade-up">
+            {/* Page header */}
+            <header className="mb-10">
+                <div className="eyebrow">
+                    <span className="w-1.5 h-1.5 rounded-full bg-rose-600 live-dot" /> Donor space
+                </div>
+                <h1 className='headline text-3xl lg:text-4xl mt-3'>
+                    Welcome back, <span className="display-serif text-gradient">{firstName}</span>
+                </h1>
+                <p className="text-zinc-500 mt-2">Your profile, health record and upcoming donations.</p>
+            </header>
+
+            {profileIncomplete && (
+                <Link href="/donor/settings" className="card card-hover flex items-center justify-between gap-4 p-5 mb-6 !border-rose-200 !bg-rose-50/60 group">
+                    <div className="flex items-center gap-3">
+                        <span className="w-10 h-10 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center"><FaPen className="text-sm" /></span>
+                        <div>
+                            <div className="font-semibold text-rose-700">Complete your profile</div>
+                            <div className="text-sm text-zinc-500">Add your blood type and contact so we can match you faster.</div>
+                        </div>
+                    </div>
+                    <FaArrowRight className="text-zinc-300 group-hover:text-rose-600 group-hover:translate-x-1 transition-all duration-200" />
+                </Link>
+            )}
+
+            <div className='grid lg:grid-cols-2 gap-5'>
+                <div className="flex flex-col gap-5">
+                    {/* Personal info */}
+                    <div className='card card-hover p-7 animate-fade-up anim-delay-1'>
+                        <h2 className='font-semibold text-lg flex items-center gap-3'>
+                            <span className="w-9 h-9 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center text-sm"><FaUser /></span>
+                            Personal information
+                        </h2>
+                        <ul className="flex flex-col mt-5">
+                            {infoRows.map((row) => (
+                                <li key={row.label} className="flex justify-between gap-6 py-2.5 border-b border-black/5 last:border-none text-sm">
+                                    <span className="text-zinc-500">{row.label}</span>
+                                    <span className='text-zinc-900 font-medium text-right'>{row.value || <span className="text-zinc-400 font-normal">Not set</span>}</span>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+
+                    {/* Health info */}
+                    <div className='card card-hover p-7 animate-fade-up anim-delay-2'>
+                        <h2 className='font-semibold text-lg flex items-center gap-3'>
+                            <span className="w-9 h-9 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center text-sm"><FaHeartPulse /></span>
+                            Health information
+                        </h2>
+                        <ul className="flex flex-col mt-5">
+                            <li className="flex justify-between items-center gap-6 py-2.5 border-b border-black/5 text-sm">
+                                <span className="text-zinc-500">Blood group</span>
+                                {donorData.blood_group
+                                    ? <span className="badge badge-accent"><FaDroplet className="text-xs" />{donorData.blood_group} {donorData.rhesus}</span>
+                                    : <span className="badge badge-muted">Unknown</span>}
+                            </li>
+                            <li className="flex justify-between gap-6 py-2.5 border-b border-black/5 text-sm">
+                                <span className="text-zinc-500">Rhesus</span>
+                                <span className='text-zinc-900 font-medium'>{donorData.rhesus || <span className="text-zinc-400 font-normal">Not set</span>}</span>
+                            </li>
+                            <li className="flex justify-between gap-6 py-2.5 text-sm">
+                                <span className="text-zinc-500">Last donation</span>
+                                <span className='text-zinc-900 font-medium'>{fmtDate(donorData.last_donation) || <span className="badge badge-muted">Never donated</span>}</span>
+                            </li>
+                        </ul>
+                    </div>
                 </div>
 
-                <div id="health_info" className=' bg-slate-800 p-5 rounded-b-2xl h-1/2'>
-                    <h1 className='text-3xl font-bold text-center'>Health Information</h1>
-                    <hr />
-                    <ul className="requests-list flex flex-col gap-3 p-3">
-                        <li><span className="text-gray-500 text-[0.99rem]">Blood Group:</span> <span className='text-white'>{donorData.blood_group}</span></li>
-                        <li><span className="text-gray-500 text-[0.99rem]">Rhesus:</span> <span className='text-white'>{donorData.rhesus}</span></li>
-                        <li><span className="text-gray-500 text-[0.99rem]">Last Donation:</span> <span className='text-white'>{donorData.last_donation}</span></li>
-                    </ul>
-                </div>
-            </div>
-
-            <div className="right flex rounded-2xl w-1/2">
-                <div id="appointments" className=' bg-slate-900 p-5 rounded-2xl h-full w-full'>
-                    <h1 className='text-3xl font-bold text-center'>Appointments</h1>
-                    <hr />
-                    <ul id="appointment_list" className="flex flex-col gap-3 p-3 h-full overflow-y-auto">
+                {/* Appointments */}
+                <div className='card p-7 flex flex-col animate-fade-up anim-delay-3'>
+                    <h2 className='font-semibold text-lg flex items-center gap-3'>
+                        <span className="w-9 h-9 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center text-sm"><FaCalendarCheck /></span>
+                        Appointments
+                    </h2>
+                    <ul className="flex flex-col gap-3 flex-1 overflow-y-auto mt-5">
                         {appointments.length > 0 ? (
-                            appointments.map((appt) => (
-                                <li key={appt.id} className='bg-slate-800 p-3 rounded-lg border border-slate-700'>
-                                    <div className='text-gray-400 text-sm'>Date:</div>
-                                    <div className='text-white font-bold'>{appt.appointment_date}</div>
+                            appointments.map((appt, i) => (
+                                <li key={appt.id} className={`card card-hover p-4 !bg-zinc-50 animate-fade-up anim-delay-${Math.min(i + 1, 6)}`}>
+                                    <div className="flex items-center justify-between gap-4">
+                                        <div>
+                                            <div className='text-xs text-zinc-500 uppercase tracking-wider'>Scheduled</div>
+                                            <div className='font-semibold mt-0.5'>{fmtDate(appt.appointment_date)}</div>
+                                        </div>
+                                        <span className="badge badge-green">Confirmed</span>
+                                    </div>
                                 </li>
                             ))
                         ) : (
-                            <li className='flex flex-col h-full align-center justify-center text-center'>
-                                <div className='self-center text-gray-500 mb-4'>No scheduled appointments</div>
+                            <li className='flex flex-col flex-1 items-center justify-center text-center py-14'>
+                                <span className="w-12 h-12 rounded-2xl bg-zinc-100 flex items-center justify-center text-zinc-400 text-xl mb-3"><FaCalendarCheck /></span>
+                                <div className="text-zinc-600 font-medium">No appointments yet</div>
+                                <div className="text-zinc-400 text-sm mt-1 max-w-[220px]">Request one below and a coordinator will confirm a date.</div>
                             </li>
                         )}
-                        <li className='mt-auto self-center'>
-                            <form action={handleRequest}>
-                                <button type="submit" className='flex flex-row bg-red-700 text-[0.9rem] hover:bg-red-900 rounded-md px-7 py-1.5 text-gray-200 font-extrabold uppercase self-center m-5'>Request Appointment</button>
-                            </form>
-                        </li>
                     </ul>
+                    <form action={handleRequest} className="mt-6">
+                        <button type="submit" className='btn btn-primary w-full btn-lg pulse-ring'>
+                            Request appointment <FaArrowRight className="text-sm" />
+                        </button>
+                    </form>
                 </div>
             </div>
         </div>

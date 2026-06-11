@@ -1,61 +1,86 @@
 import Link from 'next/link'
-import { redirect } from 'next/navigation';
+import { redirect } from 'next/navigation'
+import { FaDroplet, FaArrowRight } from 'react-icons/fa6'
+import { api } from '@/lib/api'
+import { setSession } from '@/lib/session'
 
-interface Donor {
-    id: number;
-    email: string;
-    password: string;
-    [key: string]: any;
-}
-
-export default function login() {
+export default function Login() {
     async function handleLogin(formData: FormData) {
         'use server'
-        const email = formData.get('email');
-        const password = formData.get('password');
+        const email = String(formData.get('email') || '').trim().toLowerCase()
+        const password = String(formData.get('password') || '')
 
         // Hardcoded admin login
         if (email === 'admin@admin.com' && password === 'admin') {
-            redirect('/admin');
+            await setSession({ role: 'admin' })
+            redirect('/admin')
         }
 
-        // Check against donors
-        const res = await fetch('http://localhost:8000/api/go/donors', { cache: 'no-store' });
+        // Verify against the backend (bcrypt check happens server-side)
+        const res = await fetch(api('/api/go/login'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password }),
+            cache: 'no-store',
+        })
+
         if (res.ok) {
-            const donors = await res.json();
-            const donor = donors.find((d: Donor) => d.email === email && d.password === password);
-            if (donor) {
-                redirect(`/donor/${donor.id}`);
-            } else {
-                redirect('/login?error=Invalid+email+or+password');
-            }
-        } else {
-            redirect('/login?error=System+error');
+            const donor = await res.json()
+            await setSession({ role: 'donor', id: String(donor.id) })
+            redirect(`/donor/${donor.id}`)
         }
+
+        redirect('/login?error=Invalid+email+or+password')
     }
 
     return (
-        <div className='lg:h-screen'>
-            <div className="flex justify-center items-center text-center rounded lg:h-[calc(100vh-5rem)] w-full">
-                <div className="flex w-4/5 bg-slate-700 h-4/6 rounded-2xl">
-                    <div className="text lg:w-1/2 hidden lg:block ">
-                        <div className="flex justify-center items-center h-full">
-                            <h1 className='text-9xl text-red-600 font-black text-center'>LOG IN</h1>
-                        </div>
+        <div className='min-h-screen mesh flex items-center justify-center px-6 pt-28 pb-16 relative overflow-hidden'>
+            <div className="blob w-96 h-96 bg-rose-100/70 -top-24 -left-24" aria-hidden />
+            <div className="w-full max-w-4xl card overflow-hidden grid lg:grid-cols-2 animate-scale-in">
+                {/* Brand panel */}
+                <div className="hidden lg:flex flex-col justify-between p-10 bg-gradient-to-br from-rose-50 via-white to-amber-50/40 border-r border-black/5">
+                    <div className="eyebrow">
+                        <span className="w-1.5 h-1.5 rounded-full bg-rose-600 live-dot" /> Welcome back
                     </div>
+                    <div>
+                        <h1 className="headline text-4xl">
+                            Every visit here is <span className="display-serif text-gradient">a life waiting.</span>
+                        </h1>
+                        <p className="text-zinc-500 text-sm mt-4 max-w-xs">
+                            Log back in to check your appointments or request your next donation slot.
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-2 text-zinc-400 text-sm">
+                        <FaDroplet className="text-rose-300" /> BloodBank
+                    </div>
+                </div>
 
-                    <div className="card flex flex-col justify-center items-center bg-slate-900 text-white rounded-2xl p-5 lg:w-1/2">
-                        <h2 className="text-xl font-semibold card-title border-b border-red-700 w-max justify-self-center text-center lg:hidden">Login</h2>
-                        <form action={handleLogin} className="p-3  text-[1rem]">
-                            <input type="email" name="email" placeholder="Email Address" className="bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5" required/>
-                            <input type="password" name="password" placeholder="Password" className="bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5" required/>
-                            <button type='submit' className="bg-red-700 hover:bg-red-800 rounded-md px-10 py-2 my-5 border-2 border-red-700 text-gray-200 font-extrabold text-xl">Login</button>
-                        </form>
-                        <div className='text-[0.8rem]'>-OR-</div>
-                        <div className="flex justify-center gap-1 text-[0.9rem]">
-                            Don&apos;t have an account? <Link href="/signup" className="font-bold text-red-700 hover:text-red-600">Sign Up</Link>
+                {/* Form panel */}
+                <div className="p-8 lg:p-12 flex flex-col justify-center bg-white">
+                    <h2 className="text-2xl font-bold tracking-tight">Log in</h2>
+                    <p className="text-zinc-500 text-sm mt-1.5">Enter your credentials to continue.</p>
+
+                    <form action={handleLogin} className="flex flex-col gap-5 mt-8">
+                        <div className="animate-fade-up anim-delay-1">
+                            <label className="label" htmlFor="email">Email</label>
+                            <input id="email" type="email" name="email" placeholder="you@example.com" className="field" required autoComplete="email" />
                         </div>
+                        <div className="animate-fade-up anim-delay-2">
+                            <label className="label" htmlFor="password">Password</label>
+                            <input id="password" type="password" name="password" placeholder="••••••••" className="field" required autoComplete="current-password" />
+                        </div>
+                        <button type='submit' className="btn btn-primary w-full mt-2 animate-fade-up anim-delay-3">
+                            Log in <FaArrowRight className="text-sm" />
+                        </button>
+                    </form>
+
+                    <div className="flex items-center gap-4 my-7 text-zinc-400 text-xs">
+                        <span className="flex-1 h-px bg-black/5" /> OR <span className="flex-1 h-px bg-black/5" />
                     </div>
+                    <p className="text-sm text-zinc-500 text-center">
+                        Don&apos;t have an account?{' '}
+                        <Link href="/signup" className="font-semibold text-rose-600 hover:text-rose-700 transition-colors">Sign up</Link>
+                    </p>
                 </div>
             </div>
         </div>

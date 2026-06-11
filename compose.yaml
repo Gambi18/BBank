@@ -5,12 +5,14 @@ services:
     build:
       context: ./backend
       dockerfile: go.dockerfile
+    restart: unless-stopped
     environment:
       DATABASE_URL: 'postgres://admin:2323@db:5432/bbank?sslmode=disable'
     ports:
       - "8000:8000"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
   db:
     image: postgres:18  # or :18-alpine
     restart: unless-stopped
@@ -23,7 +25,9 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql   # ← Changed: mount parent dir
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U admin"]
+      # -d bbank: without it pg_isready defaults dbname to the username ("admin")
+      # and Postgres logs FATAL: database "admin" does not exist every interval
+      test: ["CMD-SHELL", "pg_isready -U admin -d bbank"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -34,10 +38,15 @@ services:
     build:
       context: ./bbank
       dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      # Server components/actions call the Go API over the compose network (not localhost)
+      API_BASE_URL: 'http://goapp:8000'
     ports:
       - "3000:3000"
     depends_on:
-      - goapp
+      goapp:
+        condition: service_started
 
 volumes:
   postgres_data:

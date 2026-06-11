@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono, Instrument_Serif } from "next/font/google";
 import "./globals.css";
 import ToastAlert from "@/components/ToastAlert";
 
@@ -13,9 +13,17 @@ const geistMono = Geist_Mono({
 	subsets: ["latin"],
 });
 
+const instrumentSerif = Instrument_Serif({
+	variable: "--font-display",
+	weight: "400",
+	style: ["normal", "italic"],
+	subsets: ["latin"],
+});
+
 export const metadata: Metadata = {
-	title: "Bbank",
-	description: "Bloodbank Database management system",
+	title: "BloodBank — Donate blood, save lives",
+	description:
+		"A modern blood bank management platform connecting donors with hospitals in need.",
 };
 
 export default function RootLayout({
@@ -26,7 +34,7 @@ export default function RootLayout({
 	return (
 		<html lang="en">
 			<body
-				className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+				className={`${geistSans.variable} ${geistMono.variable} ${instrumentSerif.variable} antialiased`}
 			>
 				{children}
 				<ToastAlert />
@@ -34,4 +42,3 @@ export default function RootLayout({
 		</html>
 	);
 }
-

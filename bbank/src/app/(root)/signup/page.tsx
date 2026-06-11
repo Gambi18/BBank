@@ -1,13 +1,16 @@
 import Link from 'next/link'
-import { redirect } from 'next/navigation';
+import { redirect } from 'next/navigation'
+import { FaDroplet, FaArrowRight } from 'react-icons/fa6'
+import { api } from '@/lib/api'
+import { setSession } from '@/lib/session'
 
-export default function signup() {
+export default function Signup() {
     async function handleSignup(formData: FormData) {
         'use server'
 
         const rawFormData = {
             full_name: formData.get('full_name'),
-            email: formData.get('email'),
+            email: String(formData.get('email') || '').trim().toLowerCase(),
             password: formData.get('password'),
             dob: formData.get('dob'),
             gender: '',
@@ -18,46 +21,78 @@ export default function signup() {
             last_donation: '',
         }
 
-        const res = await fetch('http://localhost:8000/api/go/donors', {
+        const res = await fetch(api('/api/go/donors'), {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(rawFormData),
+            cache: 'no-store',
         })
 
         if (res.ok) {
-            const data = await res.json();
-            redirect(`/donor/${data.id}?success=Successfully+created+account`);
-        } else {
-            console.error('Failed to create donor')
-            redirect('/signup?error=Failed+to+create+account');
+            const data = await res.json()
+            await setSession({ role: 'donor', id: String(data.id) })
+            redirect(`/donor/${data.id}?success=Welcome+to+BloodBank!`)
         }
+
+        console.error('Failed to create donor')
+        redirect('/signup?error=Failed+to+create+account')
     }
 
     return (
-        <div className='lg:h-screen'>
-            <div className="flex justify-center items-center text-center rounded lg:h-[calc(100vh-5rem)] w-full">
-                <div className="flex w-4/5 bg-slate-700 rounded-2xl">
-                    <div className="card bg-slate-900 text-white rounded-2xl p-5 lg:w-1/2">
-                        <h2 className="text-xl font-semibold card-title border-b border-red-700 w-max justify-self-center text-center lg:hidden">Sign Up</h2>
-                        <form action={handleSignup} className="p-3 text-[1rem]">
-                            <input type="text" name="full_name" placeholder="Full Name" className="bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5" required />
-                            <input type="date" name="dob" placeholder="Date of Birth" className="bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5" required />
-                            <input type="email" name="email" placeholder="Email Address" className="bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5" required />
-                            <input type="password" name="password" placeholder="Password" className="bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5" required />
-                            <button type='submit' className="bg-red-700 hover:bg-red-800 rounded-md px-10 py-2 my-5 border-2 border-red-700 text-gray-200 font-extrabold text-xl">Sign Up</button>
-                        </form>
-                        <div className='text-[0.8rem]'>-OR-</div>
-                        <div className="flex justify-center gap-1 text-[.9rem] mt-5">
-                            Already have an account? <Link href="/login" className="font-bold text-red-700 hover:text-red-600">Log In</Link>
-                        </div>
-                    </div>
+        <div className='min-h-screen mesh flex items-center justify-center px-6 pt-28 pb-16 relative overflow-hidden'>
+            <div className="blob w-96 h-96 bg-rose-100/70 -bottom-24 -right-24" aria-hidden />
+            <div className="w-full max-w-4xl card overflow-hidden grid lg:grid-cols-2 animate-scale-in">
+                {/* Form panel */}
+                <div className="p-8 lg:p-12 flex flex-col justify-center bg-white">
+                    <h2 className="text-2xl font-bold tracking-tight">Create your account</h2>
+                    <p className="text-zinc-500 text-sm mt-1.5">Join the registry — it takes under a minute.</p>
 
-                    <div className="text lg:w-1/2 hidden lg:block ">
-                        <div className="flex flex-col justify-center items-center h-full">
-                            <h1 className='text-9xl text-red-600 font-black text-center'>SIGN UP</h1>
+                    <form action={handleSignup} className="flex flex-col gap-5 mt-8">
+                        <div className="animate-fade-up anim-delay-1">
+                            <label className="label" htmlFor="full_name">Full name</label>
+                            <input id="full_name" type="text" name="full_name" placeholder="Jane Doe" className="field" required autoComplete="name" />
                         </div>
+                        <div className="animate-fade-up anim-delay-2">
+                            <label className="label" htmlFor="dob">Date of birth</label>
+                            <input id="dob" type="date" name="dob" className="field" required />
+                        </div>
+                        <div className="animate-fade-up anim-delay-3">
+                            <label className="label" htmlFor="email">Email</label>
+                            <input id="email" type="email" name="email" placeholder="you@example.com" className="field" required autoComplete="email" />
+                        </div>
+                        <div className="animate-fade-up anim-delay-4">
+                            <label className="label" htmlFor="password">Password</label>
+                            <input id="password" type="password" name="password" placeholder="••••••••" className="field" required autoComplete="new-password" />
+                        </div>
+                        <button type='submit' className="btn btn-primary w-full mt-2 animate-fade-up anim-delay-5">
+                            Sign up <FaArrowRight className="text-sm" />
+                        </button>
+                    </form>
+
+                    <div className="flex items-center gap-4 my-7 text-zinc-400 text-xs">
+                        <span className="flex-1 h-px bg-black/5" /> OR <span className="flex-1 h-px bg-black/5" />
+                    </div>
+                    <p className="text-sm text-zinc-500 text-center">
+                        Already have an account?{' '}
+                        <Link href="/login" className="font-semibold text-rose-600 hover:text-rose-700 transition-colors">Log in</Link>
+                    </p>
+                </div>
+
+                {/* Brand panel */}
+                <div className="hidden lg:flex flex-col justify-between p-10 bg-gradient-to-bl from-rose-50 via-white to-amber-50/40 border-l border-black/5">
+                    <div className="eyebrow">
+                        <span className="w-1.5 h-1.5 rounded-full bg-rose-600 live-dot" /> Join the registry
+                    </div>
+                    <div>
+                        <h1 className="headline text-4xl">
+                            Ten minutes of your day. <span className="display-serif text-gradient">A lifetime for someone else.</span>
+                        </h1>
+                        <p className="text-zinc-500 text-sm mt-4 max-w-xs">
+                            Register once, donate whenever you&apos;re ready. We&apos;ll handle the scheduling.
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-2 text-zinc-400 text-sm">
+                        <FaDroplet className="text-rose-300" /> BloodBank
                     </div>
                 </div>
             </div>

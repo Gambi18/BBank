@@ -1,5 +1,7 @@
-import { revalidatePath } from 'next/cache';
-import { redirect } from 'next/navigation';
+import { revalidatePath } from 'next/cache'
+import { redirect } from 'next/navigation'
+import { FaCheck } from 'react-icons/fa6'
+import { api } from '@/lib/api'
 
 interface Request {
     id: number
@@ -9,8 +11,13 @@ interface Request {
     created_at: string
 }
 
+const initials = (name: string) =>
+    name.split(' ').map((p) => p[0]).filter(Boolean).slice(0, 2).join('').toUpperCase() || '?'
+
+const fmtDate = (d: string) => (d ? new Date(d).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : null)
+
 async function Requests() {
-    const res = await fetch('http://localhost:8000/api/go/requests', { cache: 'no-store' })
+    const res = await fetch(api('/api/go/requests'), { cache: 'no-store' })
     if (!res.ok) {
         throw new Error('Failed to fetch requests')
     }
@@ -19,72 +26,85 @@ async function Requests() {
 
     async function confirmRequest(formData: FormData) {
         'use server'
-        const requestId = formData.get('requestId');
-        const date = formData.get('date');
+        const requestId = formData.get('requestId')
+        const date = formData.get('date')
 
-        const res = await fetch(`http://localhost:8000/api/go/requests/${String(requestId)}/confirm`, {
+        const res = await fetch(api(`/api/go/requests/${String(requestId)}/confirm`), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ date })
-        });
+            body: JSON.stringify({ date }),
+        })
 
         if (res.ok) {
-            revalidatePath('/admin/requests');
-            revalidatePath('/admin/appointments');
-            redirect('/admin/requests?success=Request+successful!!');
+            revalidatePath('/admin/requests')
+            revalidatePath('/admin/appointments')
+            redirect('/admin/requests?success=Request+confirmed!')
         } else {
-            redirect('/admin/requests?error=Failed+to+confirm+request');
+            redirect('/admin/requests?error=Failed+to+confirm+request')
         }
     }
 
     return (
-        <div className='flex flex-col bg-slate-900 p-5 rounded-2xl h-full'>
-            <h1 className='text-3xl font-bold text-center'>Requests</h1>
-            <hr className='my-4' />
-            <table className='w-full table-auto border-collapse'>
-                <thead>
-                    <tr className='bg-slate-800 text-left'>
-                        <th className='p-2 w-10'>#</th>
-                        <th className='p-2'>Donor Name</th>
-                        <th className='p-2'>Last Donation</th>
-                        <th className='p-2'>Created At</th>
-                        <th className='p-2'>Action</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {data.map((request, index) => (
-                        <tr key={request.id} className='border-b border-slate-700 hover:bg-slate-800'>
-                            <td className='p-2'>{index + 1}</td>
-                            <td className='p-2'>{request.donor_name}</td>
-                            <td className='p-2'>{request.last_donation}</td>
-                            <td className='p-2'>{new Date(request.created_at).toLocaleDateString()}</td>
-                            <td className='p-2'>
-                                <form action={confirmRequest} className='flex gap-2 items-center'>
-                                    <input type="hidden" name="requestId" value={request.id} />
-                                    <input 
-                                        type="date" 
-                                        name="date" 
-                                        title="Appointment Date"
-                                        className='bg-slate-700 text-white rounded p-1 text-sm' 
-                                        required 
-                                    />
-                                    <button 
-                                        type="submit" 
-                                        className='bg-green-700 hover:bg-green-800 text-white px-3 py-1 rounded text-sm font-bold'
-                                    >
-                                        Confirm
-                                    </button>
-                                </form>
-                            </td>
-                        </tr>
-                    ))}
-                    {data.length === 0 && (
-                        <tr>
-                            <td colSpan={6} className='p-4 text-center text-gray-500'>No pending requests</td>
-                        </tr>
-                    )}
-                </tbody>
-            </table>
+        <div className="animate-fade-up">
+            <header className="mb-8">
+                <div className="eyebrow">
+                    {data.length > 0 && <span className="w-1.5 h-1.5 rounded-full bg-rose-600 live-dot" />}
+                    Inbox
+                </div>
+                <h1 className='headline text-3xl lg:text-4xl mt-3'>Requests</h1>
+                <p className="text-zinc-500 mt-2">
+                    {data.length > 0
+                        ? `${data.length} ${data.length === 1 ? 'donor is' : 'donors are'} waiting for an appointment.`
+                        : 'All caught up — no pending requests.'}
+                </p>
+            </header>
+
+            <div className='card overflow-hidden'>
+                <div className="overflow-x-auto">
+                    <table className='table-modern'>
+                        <thead>
+                            <tr>
+                                <th>Donor</th>
+                                <th>Last donation</th>
+                                <th>Requested</th>
+                                <th>Schedule</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {data.map((request) => (
+                                <tr key={request.id}>
+                                    <td>
+                                        <div className="flex items-center gap-3">
+                                            <span className="avatar">{initials(request.donor_name)}</span>
+                                            <span className="font-medium text-zinc-900">{request.donor_name}</span>
+                                        </div>
+                                    </td>
+                                    <td>{fmtDate(request.last_donation) ?? <span className="badge badge-muted">First time</span>}</td>
+                                    <td>{fmtDate(request.created_at) ?? '—'}</td>
+                                    <td>
+                                        <form action={confirmRequest} className='flex gap-2 items-center'>
+                                            <input type="hidden" name="requestId" value={request.id} />
+                                            <input
+                                                type="date"
+                                                name="date"
+                                                title="Appointment date"
+                                                className='field !w-auto !py-1.5 text-sm'
+                                                required
+                                            />
+                                            <button type="submit" className='btn btn-primary btn-sm'>
+                                                <FaCheck className="text-xs" /> Confirm
+                                            </button>
+                                        </form>
+                                    </td>
+                                </tr>
+                            ))}
+                            {data.length === 0 && (
+                                <tr><td colSpan={4} className='!py-12 text-center text-zinc-400'>No pending requests.</td></tr>
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     )
 }

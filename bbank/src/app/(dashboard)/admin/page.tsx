@@ -1,12 +1,19 @@
 import Link from 'next/link'
-import { redirect } from 'next/navigation';
+import { redirect } from 'next/navigation'
+import { revalidatePath } from 'next/cache'
+import { FaCalendarCheck, FaInbox, FaUserPlus, FaUsers, FaArrowRight } from 'react-icons/fa6'
+import { api } from '@/lib/api'
 
 async function admin() {
-    const appointmentsRes = await fetch('http://localhost:8000/api/go/appointments', { cache: 'no-store' });
-    const requestsRes = await fetch('http://localhost:8000/api/go/requests', { cache: 'no-store' });
+    const [appointmentsRes, requestsRes, donorsRes] = await Promise.all([
+        fetch(api('/api/go/appointments'), { cache: 'no-store' }),
+        fetch(api('/api/go/requests'), { cache: 'no-store' }),
+        fetch(api('/api/go/donors'), { cache: 'no-store' }),
+    ])
 
-    const appointments = appointmentsRes.ok ? await appointmentsRes.json() : [];
-    const requests = requestsRes.ok ? await requestsRes.json() : [];
+    const appointments = appointmentsRes.ok ? await appointmentsRes.json() : []
+    const requests = requestsRes.ok ? await requestsRes.json() : []
+    const donors = donorsRes.ok ? await donorsRes.json() : []
 
     async function createDonor(formData: FormData) {
         'use server'
@@ -24,80 +31,106 @@ async function admin() {
             last_donation: formData.get('last_donation'),
         }
 
-        const res = await fetch('http://localhost:8000/api/go/donors', {
+        const res = await fetch(api('/api/go/donors'), {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(rawFormData),
         })
 
         if (!res.ok) {
-            console.error('Failed to create donor')
-            redirect('/admin?error=Failed+to+create+Patient');
-        } else {
-            console.log('Donor created successfully')
-            redirect('/admin?success=Successfully+created+Patient');
+            redirect('/admin?error=Failed+to+create+donor')
         }
+        revalidatePath('/admin/donors')
+        redirect('/admin?success=Successfully+created+donor')
     }
 
+    const statCards = [
+        { href: '/admin/appointments', icon: FaCalendarCheck, label: 'Appointments', value: appointments.length, hint: 'scheduled' },
+        { href: '/admin/requests', icon: FaInbox, label: 'Requests', value: requests.length, hint: 'pending review' },
+        { href: '/admin/donors', icon: FaUsers, label: 'Donors', value: donors.length, hint: 'in the registry' },
+    ]
 
     return (
-        <div id="dashboard" className='block gap-5 m-0 h-full justify-center w-full'>
-            <h1 id='organization' className='hidden rounded-4xl bg-white text-mist-950 text-center text-2xl uppercase font-bold my-2'>Organization</h1>
-            <div className='flex gap-5 h-full justify-center w-full'>
-                <div className="left flex flex-col m-0 gap-5 w-1/2 h-full">
-                    <Link href="/admin/appointments" id="appointments" className=' bg-slate-800 p-5 rounded-t-2xl h-1/2 hover:bg-slate-700 hover:cursor-pointer'>
-                        <h1 className='text-3xl font-bold text-center' >Appointments</h1>
-                        <hr />
-                        <ul className="appointments-list p-3">
-                            {appointments.length > 0 ? (
-                                <li className='text-center text-xl font-bold text-white'>{appointments.length} Scheduled</li>
-                            ) : (
-                                <li className='text-center text-gray-500'>No new appointments</li>
-                            )}
-                        </ul>
-                    </Link>
-
-                    <Link href="/admin/requests" id="requests" className=' bg-slate-800 p-5 rounded-b-2xl h-1/2 hover:bg-slate-700 hover:cursor-pointer'>
-                        <h1 className='text-3xl font-bold text-center'>Requests</h1>
-                        <hr />
-                        <ul className="requests-list p-3">
-                            {requests.length > 0 ? (
-                                <li className='text-center text-xl font-bold text-white'>{requests.length} Pending</li>
-                            ) : (
-                                <li className='text-center text-gray-500'>No pending requests</li>
-                            )}
-                        </ul>
-                    </Link>
+        <div className="animate-fade-up">
+            {/* Page header */}
+            <header className="mb-10">
+                <div className="eyebrow">
+                    <span className="w-1.5 h-1.5 rounded-full bg-rose-600 live-dot" /> Overview
                 </div>
+                <h1 className='headline text-3xl lg:text-4xl mt-3'>Dashboard</h1>
+                <p className="text-zinc-500 mt-2">Donations, requests and registry at a glance.</p>
+            </header>
 
-                <div className="right flex rounded-2xl w-1/2">
-                    <div id="donors" className=' bg-slate-900 p-5 rounded-2xl h-full'>
-                        <h1 className='text-3xl font-bold text-center'>New Donors</h1>
-                        <hr />
-                        <form action={createDonor} className=''>
-                            <input type="text" name="name" id="full_name" placeholder='Name' className='bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5' />
-                            <input type="email" name="email" id="email" placeholder='Email' className='bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5' required/>
-                            <input type="password" name="password" id="password" placeholder='Create Password' className='bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5' />
-                            <div className="flex gap-2">
-                                <input type="date" name="dob" id="dob" placeholder='Date of Birth' className='bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5' required/>
-                                <input type="text" name="gender" id="gender" placeholder='Gender' className='bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5' required/>
-                            </div>
-                            <div className="flex gap-2">
-                                <input type="text" name="blood_group" id="blood_group" placeholder='Blood Group' className='bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5' required/>
-                                <input type="text" name="rhesus" id="rhesus" placeholder='Rhesus' className='bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5' required/>
-                            </div>
-                            <div className="flex gap-2">
-                                <input type="text" name="contact" id="contact" placeholder='Contact' className='bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5' required/>
-                                <input type="text" name="address" id="address" placeholder='Address' className='bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full my-5' required/>
-                            </div>
-                            <label htmlFor="last_donation" className='text-gray-600 mb-0'>Last Donation:</label>
-                            <input type="date" name="last_donation" id="last_donation" placeholder='Last Donation' className='bg-white text-black placeholder:text-gray-300 rounded-md py-1 px-2 w-full mb-5' />
-                            <button type="submit" className='bg-red-700 hover:bg-red-800 rounded-md px-7 py-1.5 text-gray-200 font-extrabold align-bottom'>Add Donor</button>
-                        </form>
+            {/* Stats row */}
+            <div className="grid sm:grid-cols-3 gap-4 mb-8">
+                {statCards.map((s, i) => (
+                    <Link key={s.label} href={s.href} className={`card card-hover card-spot p-6 group animate-fade-up anim-delay-${i + 1}`}>
+                        <div className="flex items-center justify-between">
+                            <span className="w-10 h-10 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center"><s.icon /></span>
+                            <FaArrowRight className="text-zinc-300 group-hover:text-rose-600 group-hover:translate-x-1 transition-all duration-200 text-sm" />
+                        </div>
+                        <div className="text-3xl font-bold tracking-tight mt-4">{s.value}</div>
+                        <div className="text-zinc-500 text-sm mt-0.5">{s.label} <span className="text-zinc-600">· {s.hint}</span></div>
+                    </Link>
+                ))}
+            </div>
+
+            {/* Add donor */}
+            <div className="card p-8 animate-fade-up anim-delay-4">
+                <div className="flex items-center gap-3 mb-6">
+                    <span className="w-10 h-10 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center"><FaUserPlus /></span>
+                    <div>
+                        <h2 className='font-semibold text-lg'>Register a donor</h2>
+                        <p className="text-zinc-500 text-sm">Add a walk-in donor directly to the registry.</p>
                     </div>
                 </div>
+                <form action={createDonor} className='grid sm:grid-cols-2 gap-5'>
+                    <div>
+                        <label className="label" htmlFor="name">Full name</label>
+                        <input id="name" type="text" name="name" placeholder='Jane Doe' className='field' required />
+                    </div>
+                    <div>
+                        <label className="label" htmlFor="email">Email</label>
+                        <input id="email" type="email" name="email" placeholder='jane@example.com' className='field' required />
+                    </div>
+                    <div>
+                        <label className="label" htmlFor="password">Password</label>
+                        <input id="password" type="password" name="password" placeholder='Create a password' className='field' required />
+                    </div>
+                    <div>
+                        <label className="label" htmlFor="dob">Date of birth</label>
+                        <input id="dob" type="date" name="dob" className='field' required />
+                    </div>
+                    <div>
+                        <label className="label" htmlFor="gender">Gender</label>
+                        <input id="gender" type="text" name="gender" placeholder='Gender' className='field' />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="label" htmlFor="blood_group">Blood group</label>
+                            <input id="blood_group" type="text" name="blood_group" placeholder='O' className='field' />
+                        </div>
+                        <div>
+                            <label className="label" htmlFor="rhesus">Rhesus</label>
+                            <input id="rhesus" type="text" name="rhesus" placeholder='+' className='field' />
+                        </div>
+                    </div>
+                    <div>
+                        <label className="label" htmlFor="contact">Contact</label>
+                        <input id="contact" type="text" name="contact" placeholder='Phone number' className='field' />
+                    </div>
+                    <div>
+                        <label className="label" htmlFor="address">Address</label>
+                        <input id="address" type="text" name="address" placeholder='City, street' className='field' />
+                    </div>
+                    <div>
+                        <label className="label" htmlFor="last_donation">Last donation</label>
+                        <input id="last_donation" type="date" name="last_donation" className='field' />
+                    </div>
+                    <div className="flex items-end">
+                        <button type="submit" className='btn btn-primary px-8'>Add donor</button>
+                    </div>
+                </form>
             </div>
         </div>
     )
