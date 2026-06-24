@@ -1,4 +1,5 @@
 import React from 'react'
+import { FaUsers } from 'react-icons/fa6'
 import { api } from '@/lib/api'
 
 interface Donor {
@@ -69,7 +70,17 @@ async function Donors() {
                                 </tr>
                             ))}
                             {data.length === 0 && (
-                                <tr><td colSpan={4} className='!py-12 text-center text-zinc-400'>No donors registered yet.</td></tr>
+                                <tr>
+                                    <td colSpan={4} className="!py-16 text-center">
+                                        <div className="flex flex-col items-center gap-3">
+                                            <span className="w-12 h-12 rounded-2xl bg-zinc-100 flex items-center justify-center text-zinc-400 text-xl">
+                                                <FaUsers />
+                                            </span>
+                                            <div className="text-zinc-600 font-medium">No donors yet</div>
+                                            <div className="text-zinc-400 text-sm max-w-[220px]">Donors appear here once they sign up or an admin registers them.</div>
+                                        </div>
+                                    </td>
+                                </tr>
                             )}
                         </tbody>
                     </table>

@@ -1,3 +1,4 @@
+import { FaCalendarCheck } from 'react-icons/fa6'
 import { api } from '@/lib/api'
 
 interface Appointment {
@@ -57,7 +58,17 @@ async function Appointments() {
                                 </tr>
                             ))}
                             {data.length === 0 && (
-                                <tr><td colSpan={4} className='!py-12 text-center text-zinc-400'>No appointments scheduled.</td></tr>
+                                <tr>
+                                    <td colSpan={4} className="!py-16 text-center">
+                                        <div className="flex flex-col items-center gap-3">
+                                            <span className="w-12 h-12 rounded-2xl bg-zinc-100 flex items-center justify-center text-zinc-400 text-xl">
+                                                <FaCalendarCheck />
+                                            </span>
+                                            <div className="text-zinc-600 font-medium">No appointments yet</div>
+                                            <div className="text-zinc-400 text-sm max-w-[240px]">Appear here once an admin confirms a donation request.</div>
+                                        </div>
+                                    </td>
+                                </tr>
                             )}
                         </tbody>
                     </table>

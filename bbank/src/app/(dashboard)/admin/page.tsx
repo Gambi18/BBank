@@ -87,11 +87,11 @@ async function admin() {
                 <form action={createDonor} className='grid sm:grid-cols-2 gap-5'>
                     <div>
                         <label className="label" htmlFor="name">Full name</label>
-                        <input id="name" type="text" name="name" placeholder='Jane Doe' className='field' required />
-                    </div>
-                    <div>
-                        <label className="label" htmlFor="email">Email</label>
-                        <input id="email" type="email" name="email" placeholder='jane@example.com' className='field' required />
+                        <input id="name" type="text" name="name" placeholder='Yannick Njiki' className='field' required />
+                        </div>
+                        <div>
+                            <label className="label" htmlFor="email">Email</label>
+                            <input id="email" type="email" name="email" placeholder='yannick@example.com' className='field' required />
                     </div>
                     <div>
                         <label className="label" htmlFor="password">Password</label>

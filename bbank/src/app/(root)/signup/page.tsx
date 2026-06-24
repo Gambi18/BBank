@@ -50,7 +50,7 @@ export default function Signup() {
                     <form action={handleSignup} className="flex flex-col gap-5 mt-8">
                         <div className="animate-fade-up anim-delay-1">
                             <label className="label" htmlFor="full_name">Full name</label>
-                            <input id="full_name" type="text" name="full_name" placeholder="Jane Doe" className="field" required autoComplete="name" />
+                            <input id="full_name" type="text" name="full_name" placeholder="Amara Tchinda" className="field" required autoComplete="name" />
                         </div>
                         <div className="animate-fade-up anim-delay-2">
                             <label className="label" htmlFor="dob">Date of birth</label>
@@ -58,7 +58,7 @@ export default function Signup() {
                         </div>
                         <div className="animate-fade-up anim-delay-3">
                             <label className="label" htmlFor="email">Email</label>
-                            <input id="email" type="email" name="email" placeholder="you@example.com" className="field" required autoComplete="email" />
+                            <input id="email" type="email" name="email" placeholder="amara@example.com" className="field" required autoComplete="email" />
                         </div>
                         <div className="animate-fade-up anim-delay-4">
                             <label className="label" htmlFor="password">Password</label>

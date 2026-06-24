@@ -1,7 +1,7 @@
 'use client'
 
 import { useSearchParams, useRouter, usePathname } from 'next/navigation'
-import { useEffect, useState, Suspense } from 'react'
+import { useRef, useState, useEffect, Suspense } from 'react'
 import { FaCircleCheck, FaCircleExclamation, FaXmark } from 'react-icons/fa6'
 
 function ToastContent() {
@@ -9,42 +9,43 @@ function ToastContent() {
     const router = useRouter()
     const pathname = usePathname()
 
-    const [alert, setAlert] = useState<{ type: 'success' | 'error', message: string } | null>(null)
+    const success = searchParams.get('success')
+    const error = searchParams.get('error')
+
+    const [current, setCurrent] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
     const [visible, setVisible] = useState(false)
+    const cleaned = useRef(false)
 
     useEffect(() => {
-        const success = searchParams.get('success')
-        const error = searchParams.get('error')
+        if (cleaned.current || (!success && !error)) return
+        cleaned.current = true
 
-        if (success) {
-            setAlert({ type: 'success', message: success })
+        const kind = success ? 'success' : 'error'
+        const msg = success || error || ''
+
+        const id = setTimeout(() => {
+            setCurrent({ type: kind, message: msg })
             setVisible(true)
-            cleanParams()
-        } else if (error) {
-            setAlert({ type: 'error', message: error })
-            setVisible(true)
-            cleanParams()
-        }
+        }, 0)
 
-        function cleanParams() {
-            // Remove the query param so it doesn't show again on refresh
-            const newParams = new URLSearchParams(searchParams.toString())
-            newParams.delete('success')
-            newParams.delete('error')
-            const newUrl = `${pathname}${newParams.toString() ? `?${newParams.toString()}` : ''}`
-            router.replace(newUrl, { scroll: false })
+        const params = new URLSearchParams(searchParams.toString())
+        params.delete('success')
+        params.delete('error')
+        const next = `${pathname}${params.toString() ? '?' + params.toString() : ''}`
+        router.replace(next, { scroll: false })
 
-            // Auto hide after 5 seconds
-            setTimeout(() => {
-                setVisible(false)
-                setTimeout(() => setAlert(null), 500) // wait for fade out animation
-            }, 5000)
-        }
-    }, [searchParams, pathname, router])
+        const hideId = setTimeout(() => {
+            setVisible(false)
+            setTimeout(() => setCurrent(null), 500)
+        }, 5000)
 
-    if (!alert) return null
+        return () => { clearTimeout(id); clearTimeout(hideId) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [success, error])
 
-    const isSuccess = alert.type === 'success'
+    if (!current) return null
+
+    const isSuccess = current.type === 'success'
 
     return (
         <div
@@ -61,10 +62,10 @@ function ToastContent() {
                 <div className={`font-semibold ${isSuccess ? 'text-emerald-700' : 'text-rose-700'}`}>
                     {isSuccess ? 'Success' : 'Something went wrong'}
                 </div>
-                <div className="text-zinc-600">{alert.message}</div>
+                <div className="text-zinc-600">{current.message}</div>
             </div>
             <button
-                onClick={() => { setVisible(false); setTimeout(() => setAlert(null), 500) }}
+                onClick={() => { setVisible(false); setTimeout(() => setCurrent(null), 500) }}
                 className="ml-2 p-1.5 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-black/5 transition-colors"
                 aria-label="Dismiss"
             >

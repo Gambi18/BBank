@@ -51,7 +51,7 @@ export default function SidebarNav({ role, donorId }: { role: 'admin' | 'donor';
                         <Link
                             key={href}
                             href={href}
-                            className={`group flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all duration-200 ${
+                            className={`group flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2 ${
                                 active
                                     ? 'bg-rose-50 text-rose-700 shadow-[inset_0_0_0_1px_#fecdd3]'
                                     : 'text-zinc-500 hover:text-zinc-900 hover:bg-black/[0.04]'
@@ -69,7 +69,7 @@ export default function SidebarNav({ role, donorId }: { role: 'admin' | 'donor';
             <div className="mt-auto flex flex-col gap-1 pt-4 border-t border-black/5">
                 <Link
                     href={settingsHref}
-                    className={`group flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all duration-200 ${
+                    className={`group flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2 ${
                         pathname.startsWith(settingsHref)
                             ? 'bg-rose-50 text-rose-700'
                             : 'text-zinc-500 hover:text-zinc-900 hover:bg-black/[0.04]'
@@ -81,7 +81,7 @@ export default function SidebarNav({ role, donorId }: { role: 'admin' | 'donor';
                 <form action={logout}>
                     <button
                         type="submit"
-                        className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium text-zinc-500 hover:text-rose-700 hover:bg-rose-50 transition-all duration-200"
+                        className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium text-zinc-500 hover:text-rose-700 hover:bg-rose-50 transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2"
                     >
                         <FaArrowRightFromBracket className="text-[0.95rem]" />
                         Log out

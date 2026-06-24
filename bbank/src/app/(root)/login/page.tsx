@@ -63,7 +63,7 @@ export default function Login() {
                     <form action={handleLogin} className="flex flex-col gap-5 mt-8">
                         <div className="animate-fade-up anim-delay-1">
                             <label className="label" htmlFor="email">Email</label>
-                            <input id="email" type="email" name="email" placeholder="you@example.com" className="field" required autoComplete="email" />
+                            <input id="email" type="email" name="email" placeholder="kofi@example.com" className="field" required autoComplete="email" />
                         </div>
                         <div className="animate-fade-up anim-delay-2">
                             <label className="label" htmlFor="password">Password</label>

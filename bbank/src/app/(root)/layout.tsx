@@ -1,6 +1,6 @@
 import React from 'react'
 import Link from 'next/link'
-import { FaDroplet, FaInstagram, FaFacebook, FaXTwitter, FaLinkedin } from 'react-icons/fa6'
+import { FaDroplet, FaEnvelope, FaPhone } from 'react-icons/fa6'
 import Navbar from '@/components/Navbar'
 
 const layout = ({ children }: { children: React.ReactNode }) => {
@@ -24,11 +24,13 @@ const layout = ({ children }: { children: React.ReactNode }) => {
                         <p className="text-zinc-500 text-sm mt-4 max-w-xs">
                             Connecting willing donors with hospitals in critical need. One donation can save up to three lives.
                         </p>
-                        <div className="flex gap-4 mt-5 text-zinc-400">
-                            <a href="#" aria-label="Instagram" className="hover:text-rose-600 transition-colors"><FaInstagram /></a>
-                            <a href="#" aria-label="Facebook" className="hover:text-rose-600 transition-colors"><FaFacebook /></a>
-                            <a href="#" aria-label="X" className="hover:text-rose-600 transition-colors"><FaXTwitter /></a>
-                            <a href="#" aria-label="LinkedIn" className="hover:text-rose-600 transition-colors"><FaLinkedin /></a>
+                        <div className="flex flex-col gap-2 mt-5 text-sm text-zinc-400">
+                            <a href="mailto:hello@bloodbank.example" className="hover:text-rose-600 transition-colors flex items-center gap-2">
+                                <FaEnvelope className="text-xs" /> hello@bloodbank.example
+                            </a>
+                            <a href="tel:+237653532929" className="hover:text-rose-600 transition-colors flex items-center gap-2">
+                                <FaPhone className="text-xs" /> +237 6 53 53 29 29
+                            </a>
                         </div>
                     </div>
                     <div>
@@ -45,11 +47,13 @@ const layout = ({ children }: { children: React.ReactNode }) => {
                             <li><Link href="/#about" className="hover:text-zinc-900 transition-colors">About us</Link></li>
                             <li><Link href="/#contact" className="hover:text-zinc-900 transition-colors">Contact</Link></li>
                             <li><a href="https://www.who.int/campaigns/world-blood-donor-day/2018/who-can-give-blood" target="_blank" rel="noreferrer" className="hover:text-zinc-900 transition-colors">Who can donate?</a></li>
+                            <li><Link href="/privacy" className="hover:text-zinc-900 transition-colors">Privacy policy</Link></li>
+                            <li><Link href="/terms" className="hover:text-zinc-900 transition-colors">Terms of service</Link></li>
                         </ul>
                     </div>
                 </div>
                 <div className="border-t border-black/5 py-6 text-center text-xs text-zinc-400">
-                    © {new Date().getFullYear()} BloodBank. Every drop counts.
+                    &copy; {new Date().getFullYear()} BloodBank. Every drop counts.
                 </div>
             </footer>
         </div>

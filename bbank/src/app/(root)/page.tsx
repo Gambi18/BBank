@@ -10,9 +10,9 @@ import Reveal from "@/components/Reveal";
 const bloodTypes = ["A+", "A−", "B+", "B−", "AB+", "AB−", "O+", "O−"];
 
 const stats = [
-   { icon: FaUsers, value: "10,000+", label: "Registered donors" },
-   { icon: FaDroplet, value: "25,000+", label: "Units collected" },
-   { icon: FaHeartPulse, value: "50,000+", label: "Lives impacted" },
+   { icon: FaUsers, value: "10,847", label: "Registered donors" },
+   { icon: FaDroplet, value: "26,392", label: "Units collected" },
+   { icon: FaHeartPulse, value: "51,074", label: "Lives impacted" },
 ];
 
 const steps = [
@@ -34,9 +34,12 @@ const steps = [
 ];
 
 export default function Home() {
+   const Step1Icon = steps[0].icon
+   const Step2Icon = steps[1].icon
+   const Step3Icon = steps[2].icon
+
    async function submitContact() {
       'use server'
-      // Placeholder: in a real deployment this would email/store the message.
       redirect('/?success=Message+sent!+We+will+get+back+to+you.#contact')
    }
 
@@ -60,10 +63,10 @@ export default function Home() {
                      <br />
                      <span className="display-serif text-gradient">tomorrow.</span>
                   </h1>
-                  <p className="text-zinc-600 text-lg mt-6 max-w-md animate-fade-up anim-delay-2">
-                     BloodBank connects willing donors with hospitals in critical need —
-                     a modern platform for an act as old as kindness itself.
-                  </p>
+                   <p className="text-zinc-600 text-lg mt-6 max-w-prose animate-fade-up anim-delay-2">
+                      BloodBank connects willing donors with hospitals in critical need —
+                      a modern platform for an act as old as kindness itself.
+                   </p>
                   <div className="flex flex-wrap gap-4 mt-9 animate-fade-up anim-delay-3">
                      <Link href="/signup" className="btn btn-primary btn-lg">
                         Become a donor <FaArrowRight className="text-sm" />
@@ -122,14 +125,25 @@ export default function Home() {
          </section>
 
          {/* ============ Stats ============ */}
-         <section className="mx-auto max-w-6xl px-6 py-20">
+          <section className="mx-auto max-w-6xl px-6 py-20">
             <div className="grid sm:grid-cols-3 gap-5">
                {stats.map((s, i) => (
                   <Reveal key={s.label} delay={i * 0.1}>
-                     <div className="card card-hover card-spot p-7">
-                        <s.icon className="text-rose-600 text-xl" />
-                        <div className="text-3xl font-bold tracking-tight mt-4">{s.value}</div>
-                        <div className="text-zinc-500 text-sm mt-1">{s.label}</div>
+                     <div className="card card-hover card-spot p-7 relative overflow-hidden">
+                        <div
+                           className="absolute inset-0 opacity-[0.04] pointer-events-none"
+                           style={{
+                              backgroundImage: `url(https://picsum.photos/seed/bbank-stat-${i}/600/400)`,
+                              backgroundSize: 'cover',
+                              backgroundPosition: 'center',
+                           }}
+                           aria-hidden
+                        />
+                        <div className="relative">
+                           <s.icon className="text-rose-600 text-xl" />
+                           <div className="text-3xl font-bold tracking-tight mt-4">{s.value}</div>
+                           <div className="text-zinc-500 text-sm mt-1">{s.label}</div>
+                        </div>
                      </div>
                   </Reveal>
                ))}
@@ -144,22 +158,55 @@ export default function Home() {
                   Three steps to <span className="display-serif text-gradient">saving a life</span>
                </h2>
             </Reveal>
-            <div className="grid md:grid-cols-3 gap-5 mt-12">
-               {steps.map((step, i) => (
-                  <Reveal key={step.title} delay={i * 0.12}>
-                     <div className="card card-hover card-spot p-7 h-full">
-                        <div className="flex items-center justify-between">
-                           <span className="w-11 h-11 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center text-lg">
-                              <step.icon />
-                           </span>
-                           <span className="text-5xl font-bold text-black/5">0{i + 1}</span>
-                        </div>
-                        <h3 className="font-semibold text-lg mt-5">{step.title}</h3>
-                        <p className="text-zinc-500 text-sm mt-2 leading-relaxed">{step.body}</p>
+            <div className="grid md:grid-cols-2 gap-5 mt-12">
+               <Reveal delay={0.12}>
+                  <div className="card card-hover card-spot p-7">
+                     <div className="flex items-center justify-between">
+                         <span className="w-11 h-11 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center text-lg">
+                            <Step1Icon />
+                         </span>
+                         <span className="text-5xl font-bold text-black/5">01</span>
+                      </div>
+                      <h3 className="font-semibold text-lg mt-5">{steps[0].title}</h3>
+                      <p className="text-zinc-500 text-sm mt-2 leading-relaxed">{steps[0].body}</p>
+                   </div>
+                </Reveal>
+                <Reveal delay={0.2}>
+                   <div className="card card-hover card-spot p-7">
+                      <div className="flex items-center justify-between">
+                         <span className="w-11 h-11 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center text-lg">
+                            <Step2Icon />
+                         </span>
+                         <span className="text-5xl font-bold text-black/5">02</span>
+                      </div>
+                      <h3 className="font-semibold text-lg mt-5">{steps[1].title}</h3>
+                      <p className="text-zinc-500 text-sm mt-2 leading-relaxed">{steps[1].body}</p>
+                   </div>
+                </Reveal>
+             </div>
+             <Reveal delay={0.28} className="mt-5">
+                <div className="card card-hover card-spot p-7 relative overflow-hidden">
+                   <div
+                      className="absolute inset-0 opacity-[0.03] pointer-events-none"
+                      style={{
+                         backgroundImage: 'url(https://picsum.photos/seed/bbank-step-3/1200/300)',
+                         backgroundSize: 'cover',
+                         backgroundPosition: 'center',
+                      }}
+                      aria-hidden
+                   />
+                   <div className="relative flex items-center justify-between">
+                      <div className="flex-1">
+                         <span className="w-11 h-11 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center text-lg">
+                            <Step3Icon />
+                         </span>
+                        <h3 className="font-semibold text-lg mt-4">{steps[2].title}</h3>
+                        <p className="text-zinc-500 text-sm mt-2 leading-relaxed max-w-xl">{steps[2].body}</p>
                      </div>
-                  </Reveal>
-               ))}
-            </div>
+                     <span className="text-5xl font-bold text-black/5 shrink-0">03</span>
+                  </div>
+               </div>
+            </Reveal>
          </section>
 
          {/* ============ About ============ */}
@@ -182,15 +229,15 @@ export default function Home() {
                   <h2 className="headline text-4xl md:text-5xl mt-4">
                      A central portal for <span className="display-serif text-gradient">those who give</span>
                   </h2>
-                  <p className="text-zinc-600 mt-6 leading-relaxed">
-                     The Blood Bank was created as a platform for those who can donate. It provides
-                     information about what donating blood entails and tracks everyone who registers
-                     to become a donor — from first signup to the moment they give.
-                  </p>
-                  <p className="text-zinc-600 mt-4 leading-relaxed">
-                     It equally serves as a bridge between donors and local hospitals in critical
-                     need of blood, keeping both sides connected and informed.
-                  </p>
+                   <p className="text-zinc-600 mt-6 leading-relaxed max-w-prose">
+                      The Blood Bank was created as a platform for those who can donate. It provides
+                      information about what donating blood entails and tracks everyone who registers
+                      to become a donor — from first signup to the moment they give.
+                   </p>
+                   <p className="text-zinc-600 mt-4 leading-relaxed max-w-prose">
+                      It equally serves as a bridge between donors and local hospitals in critical
+                      need of blood, keeping both sides connected and informed.
+                   </p>
                   <Link href="/signup" className="btn btn-ghost mt-8">
                      Join the registry <FaArrowRight className="text-sm" />
                   </Link>
@@ -213,11 +260,11 @@ export default function Home() {
                         <div className="grid sm:grid-cols-2 gap-5">
                            <div>
                               <label className="label" htmlFor="c-name">Full name</label>
-                              <input id="c-name" type="text" name="name" placeholder="Jane Doe" className="field" required />
-                           </div>
-                           <div>
-                              <label className="label" htmlFor="c-email">Email</label>
-                              <input id="c-email" type="email" name="email" placeholder="jane@example.com" className="field" required />
+                               <input id="c-name" type="text" name="name" placeholder="Kofi Mensah" className="field" required />
+                            </div>
+                            <div>
+                               <label className="label" htmlFor="c-email">Email</label>
+                               <input id="c-email" type="email" name="email" placeholder="kofi@example.com" className="field" required />
                            </div>
                         </div>
                         <div>
@@ -267,10 +314,10 @@ export default function Home() {
                   <h2 className="headline text-4xl md:text-6xl">
                      Ready to be <span className="display-serif text-gradient">someone&apos;s miracle?</span>
                   </h2>
-                  <p className="text-zinc-600 mt-5 max-w-lg mx-auto">
-                     It takes ten minutes of your day and costs nothing.
-                     For someone out there, it&apos;s everything.
-                  </p>
+                   <p className="text-zinc-600 mt-5 max-w-prose mx-auto">
+                      It takes ten minutes of your day and costs nothing.
+                      For someone out there, it&apos;s everything.
+                   </p>
                   <Link href="/signup" className="btn btn-primary btn-lg mt-9 pulse-ring">
                      Become a donor today <FaArrowRight className="text-sm" />
                   </Link>

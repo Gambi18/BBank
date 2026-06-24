@@ -20,9 +20,13 @@
   --accent-strong: #be123c; /* rose-700 */
   --accent-soft: rgba(225, 29, 72, 0.08);
 
-  /* Lines */
-  --border: rgba(0, 0, 0, 0.07);
-  --border-strong: rgba(0, 0, 0, 0.13);
+  /* Lines — tinted with warm zinc hue instead of pure black */
+  --border: rgba(24, 24, 27, 0.07);
+  --border-strong: rgba(24, 24, 27, 0.13);
+
+  /* Shadows — tinted warm */
+  --shadow-color: rgba(24, 24, 27, 0.04);
+  --shadow-color-strong: rgba(24, 24, 27, 0.12);
 
   --radius: 16px;
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
@@ -32,7 +36,7 @@
   --color-background: var(--bg);
   --color-foreground: var(--text);
   --color-accent: var(--accent);
-  --font-sans: var(--font-geist-sans);
+  --font-sans: var(--font-outfit);
   --font-mono: var(--font-geist-mono);
 }
 
@@ -41,7 +45,7 @@
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  font-family: var(--font-outfit), system-ui, sans-serif;
   font-size: 1rem;
   line-height: 1.65;
   letter-spacing: -0.011em;
@@ -99,13 +103,20 @@ body {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  box-shadow: 0 1px 3px var(--shadow-color);
   transition: border-color 0.3s ease, transform 0.35s var(--ease-out), box-shadow 0.35s ease;
 }
+
+.card-soft {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 3px var(--shadow-color);
+}
+
 .card-hover:hover {
   border-color: var(--border-strong);
   transform: translateY(-3px);
-  box-shadow: 0 18px 36px -20px rgba(0, 0, 0, 0.14);
+  box-shadow: 0 18px 36px -20px var(--shadow-color-strong);
 }
 /* Kept intentionally quiet for the minimalist look */
 .card-spot:hover { border-color: rgba(225, 29, 72, 0.25); }
@@ -248,7 +259,7 @@ body {
   justify-content: center;
   width: 2.1rem;
   height: 2.1rem;
-  border-radius: 99px;
+  border-radius: 10px;
   background: #f4f4f5;
   border: 1px solid var(--border-strong);
   font-size: 0.75rem;
@@ -304,7 +315,53 @@ body {
 }
 .marquee:hover { animation-play-state: paused; }
 
-/* Links with sliding underline */
+/* ------------------------------------------------------------------
+   Grain overlay — breaks digital flatness
+   ------------------------------------------------------------------ */
+.grain-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0.35;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.5'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 256px 256px;
+}
+
+/* ------------------------------------------------------------------
+   Skeleton loading
+   ------------------------------------------------------------------ */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    #e4e4e7 25%,
+    #f4f4f5 50%,
+    #e4e4e7 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.8s ease-in-out infinite;
+  border-radius: 8px;
+}
+
+.skeleton-block {
+  height: 1rem;
+  width: 100%;
+}
+
+.skeleton-card {
+  height: 8rem;
+  border-radius: var(--radius);
+}
+
+/* ------------------------------------------------------------------
+   Links with sliding underline
+   ------------------------------------------------------------------ */
 .nav-link {
   position: relative;
   color: var(--text-2);
