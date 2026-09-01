@@ -40,6 +40,11 @@ verified session (WI-17/WI-20), not a parameter.
 failed its format CHECK, and a password that failed the bcrypt-shape CHECK.
 **Solution:** query `pg_attribute` for the real columns before writing the fixture.
 **Prevention:** for an unfamiliar schema, introspect first. Each guess costs a full round trip.
+**Recurred 2026-09-01 (3rd time):** guessed `donor_eligibility`'s columns (`user_id`,
+`last_donation_at`) when they are `donor_id`, `last_donated_at`. This is now the single most
+repeated mistake in this repo. Rule: **before querying or dropping any object you did not just
+write by hand, read its definition.** One `information_schema` query is cheaper than one failed
+statement, every time.
 
 ---
 

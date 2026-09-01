@@ -39,7 +39,7 @@ legacy scope; it will be rebaselined against the new scope at the `WI-06` bounda
 | Backend API (CRUD)       |  85%   | CRUD + `POST /login`, bcrypt, validation, transactional confirm. Missing: appt/request delete endpoints |
 | Frontend UI / pages      |  97%   | Design refinement pass: Outfit font, tinted shadows, grain overlay, staggered layouts, richer empty/loading states, custom 404, legal pages, OG meta, skip-to-content |
 | Auth & Security          |  70%   | + CORS allowlist, ownership bypass closed, secret hygiene, fail-fast config. TODO: sign the cookie (P1-1), real roles (P1-3) |
-| Data model / DB          |  90%   | Migrations `000000`–`000009` applied and round-tripped. **All 21 target tables exist** (26 with audit partitions, `migration_rejects` and legacy `donors`): 21 enums, 43 FKs, 265 CHECKs, `audit_log` partitioned by month. Remaining: `000010`–`000012` — views, triggers, indexes, seed (`WI-16`) |
+| Data model / DB          |  97%   | **Schema complete.** Migrations `000000`–`000012` verified `up → down -all → up` on a fresh database: 26 tables, 21 enums, 4 views, 82 indexes, 18 triggers, 43 FKs, 14 policy rows. Remaining: `000013` drop-legacy-donors, deliberately deferred to `WI-37` |
 | DevOps / Docker          |  92%   | + golang-migrate, `migrate` compose service, env-injected secrets, server timeouts, graceful shutdown, structured logs, `/healthz` + `/readyz` |
 | Testing                  |  15%   | CI skeleton (gofmt, vet, build, golangci-lint, govulncheck, tsc, eslint, npm audit, gitleaks, migrate up/down/up). No unit tests yet — `WI-29` |
 | Documentation            |  90%   | Full planning set (8,100+ lines): PRD, TRD, User Journey, UI/UX Brief, DB Schema, Implementation Plan — all cross-referenced by FR/NFR/WI ID |
@@ -176,6 +176,24 @@ All four P0 findings below are fixed and covered by an acceptance check. Origina
 ---
 
 ## Changelog
+- **2026-09-01** — **`WI-16` complete; the database schema is finished** (migrations `000010`–`000012`).
+  7 trigger functions + 11 triggers, 4 views, 38 indexes, and the reference seed.
+  **The clinical constants are now data, not code**: 14 `policies` rows carry the 56-day interval,
+  18–65 age band, 50 kg minimum, Hb 12.5/13.0 by sex, and component shelf lives (PRBC 42d, platelets
+  5d, FFP/cryo 12mo). The `abo_compatibility` matrix seeds to exactly 27 rows, matching spec
+  (O−:1 … AB+:8). 5 mandatory TTI types.
+  **Verified functionally on real data, not asserted:**
+  `guard_unit_release` refuses an untested unit (*"5 mandatory TTI test(s) missing"*), still refuses
+  with one reactive result, and releases only on a full non-reactive panel — consistent with `OD-18`
+  (no override, ever). `unit_status_events` auto-appends every transition and **rejects both UPDATE
+  and DELETE**; a `blood_units` status change cannot happen without a ledger row. `donor_eligibility`
+  computes `next_eligible_on` from a real `donations` row (+56 days exactly), flags the legacy
+  future-dated donor as `under_age`, and correctly ignores `legacy_last_donation`.
+  Full `up → down -all → up` cycle passes on a fresh PostgreSQL 18 database.
+  **Two design decisions recorded in the migrations:** `CREATE INDEX CONCURRENTLY` is deliberately
+  *not* used in `000011` — every indexed table is empty at that point, so it would buy nothing and
+  cost transactional safety; and `000012.down` now refuses with a named error when operational data
+  references the seed, rather than surfacing an opaque FK violation.
 - **2026-09-01** — **`WI-15` complete** (migrations `000006`–`000009`, all purely additive).
   `000006` screening/deferrals/**donations** — the row that was entirely missing, and the reason
   `donors.last_donation` was donor-entered free text and the 56-day interval could not be enforced.
