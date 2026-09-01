@@ -786,7 +786,7 @@ flowchart TD
     R -->|no| T["Clinician told plainly: not available,<br/>here is the nearest facility that has it"]
     Q --> U["Emergency collection · abbreviated screening,<br/>never abbreviated testing"]
     S --> I
-    U --> V["Note: units still require full TTI before release.<br/>Emergency release is a documented clinical override,<br/>signed by a named clinician."]
+    U --> V["Units require full TTI before release.<br/>There is NO emergency override (OD-18, resolved 2026-09-01).<br/>An unfilled emergency escalates to the urgent-donor<br/>broadcast and partner banks, never to untested blood."]
     V --> I
     I --> W["Clinician sees a live timeline the whole time"]
 ```
@@ -1292,7 +1292,7 @@ well.
 | Q1 | Is the counselling officer a distinct role, or an `admin` with a flag? §5.3 assumes a named human, not necessarily a role enum value. | Product | Reactive-result flow |
 | Q2 | Do donors self-book confirmed slots, or does every request stay staff-confirmed? This changes the whole booking journey. | Product | §4.1, §5.1 |
 | Q3 | SMS provider and cost per message in-region — drives the notification matrix. | Ops | §6.2 |
-| Q4 | Is emergency clinical override of TTI release ever permitted, and who signs? §5.4 assumes yes-with-signature. | Clinical | §5.4 |
+| ~~Q4~~ | ~~Is emergency clinical override of TTI release ever permitted?~~ **RESOLVED 2026-09-01: no override exists.** `FR-28`/`FR-71` stand; `guard_unit_release` enforces it at the database level. §5.4 corrected. | Clinical | §5.4 |
 | Q5 | Multi-center from day one, or single center with the table present? | Product | Booking, inventory, transfers |
 | Q6 | Retention period for `audit_log` and reactive-result access logs. | Compliance | §5.3 |
 

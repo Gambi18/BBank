@@ -60,3 +60,21 @@ already hit once and fixed. Do not reintroduce them.
 - **Undefined Tailwind utility classes.** Custom classes (`.card`, `.btn`, `.field`, `.badge`,
   `.blob`, `.mesh`, `.blur-panel`…) are hand-defined in `src/app/globals.css`, not Tailwind
   built-ins. Check that file before using or renaming one.
+
+### 2026-09-01 — Guessed a constraint name in a down migration
+**Cause:** wrote `DROP CONSTRAINT users_hospital_role_chk` in `000003.down.sql` from memory; the
+actual name in the up migration is `users_hospital_only_for_hospital_user`.
+**Course:** would have made the down migration fail — caught before running, by diffing the down
+against the up rather than assuming.
+**Solution:** read the constraint names out of the up migration.
+**Prevention:** a down migration must be written by reading the up migration, never from memory.
+Same root cause as the fixture-guessing entry above: guessing identifiers instead of reading them.
+
+### 2026-09-01 — Shell variable used as a command (zsh)
+**Cause:** `MIG='docker run ...'` then `$MIG down 3`. zsh does not word-split unquoted parameter
+expansions the way bash does, so it looked for a single file with the whole string as its name.
+**Course:** the down/up round-trip silently did not run; the follow-up assertions then reported on a
+stale database and looked like they passed.
+**Solution:** use a shell function, not a variable, for a reusable command.
+**Prevention:** a step that appears to succeed without producing its expected output has not run.
+Check the step's own output, not just the assertion after it.

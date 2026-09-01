@@ -153,8 +153,8 @@ existing tables so that `golang-migrate` has a known starting point. No data is 
 > request history survives approval, and a donor inside a deferral or interval window is blocked
 > from booking with the date they become eligible.
 
-**Entry criteria:** Phase 0 exit criteria met; the deployment timezone is confirmed (§13, `OD-14`)
-— the migration backfills in schema §11.4/§11.5 are wrong by hours if it is guessed.
+**Entry criteria:** Phase 0 exit criteria met ✅; the deployment timezone is confirmed ✅ —
+**`OD-14` answered 2026-09-01: `Africa/Douala`** (WAT, UTC+1, no DST).
 
 **Exit criteria:**
 - No code path reads `donors`; the application runs entirely on `users` + `donor_profiles`.
@@ -816,7 +816,7 @@ a separate release, in a later phase, gated on four preconditions.
    (TRD §14.2 — staging never holds real PHI).
 3. Run the §11.6 verification queries from [`DATABASE_SCHEMA.md`](./DATABASE_SCHEMA.md) and record
    the counts: `count(donors)` = `count(users where role='donor')` + `count(migration_rejects)`.
-4. Confirm the deployment timezone (`OD-14`). Getting this wrong shifts every backfilled datetime.
+4. ~~Confirm the deployment timezone (`OD-14`).~~ **Done — `Africa/Douala`.**
 
 **If the backfill produces wrong data (wrong counts, mangled names, bad dates):**
 
@@ -942,11 +942,11 @@ carried with the stated default, but the decision must be recorded before the de
 | **OD-11** | **Is patient-level data ever stored, or does the patient reference stay opaque?** Materially changes the privacy posture. | PRD Q11 | `WI-67` · `WI-75` · Phase 4 entry | **Yes** | Legal / director | — |
 | **OD-12** | **Who owns production operations** — backups, restores, incident response — once this handles real donations? | PRD Q12 · TRD Q6 | `WI-102` · go-live | **Yes** before go-live | Director | TRD: managed Postgres as soon as real PHI exists |
 | **OD-13** | **Retention period for `audit_log` and reactive-result access logs.** | UJ Q6 | `WI-95` | No | Compliance | — |
-| **OD-14** | **Confirm the deployment timezone.** `Africa/Douala` is assumed throughout the schema migration. A wrong guess shifts every backfilled appointment by hours. | Schema Q6 | `WI-14` · `WI-15` | **Yes — the hardest blocker in Phase 1** | Operations | Assumed `Africa/Douala`; **assumption, not answer** |
+| ~~**OD-14**~~ **RESOLVED 2026-09-01** | **Deployment timezone = `Africa/Douala`** (WAT, UTC+1, no DST). Confirmed by the project owner. Cameroon has never observed DST, so the backfill needs no ambiguous- or skipped-hour handling. | Schema Q6 | `WI-14` · `WI-15` | ~~Blocker~~ — cleared | Operations | **Answered: `Africa/Douala`** |
 | **OD-15** | **Is barcode / label printing in scope?** Determines the `unit_code` format and whether hardware is needed. | TRD Q5 | `WI-45` | No | Operations | TRD: generate and display a code; defer physical printing |
 | **OD-16** | **Does `proxy.ts` run on the Edge or the Node runtime?** | TRD Q7 | `WI-19` | No | Engineering | TRD: ES256 — works on both |
 | **OD-17** | **Do donors self-book confirmed slots, or does every request stay staff-confirmed?** This changes the whole booking journey. | UJ Q2 | `WI-24` · `WI-S11` · the donor journey design | **Yes** before `WI-24` | Product | — |
-| **OD-18** | **Is emergency clinical override of TTI release ever permitted, and who signs?** UJ §5.4 assumes yes-with-signature; **`FR-28` and `FR-71` as written permit no override at all.** These two positions are in genuine conflict and a human must resolve it. | UJ Q4 vs PRD `FR-28`/`FR-71` | `WI-49` · `WI-97` | **Yes — this is a clinical safety decision, not an engineering one** | Clinical lead + director | PRD position: **no override path exists** |
+| ~~**OD-18**~~ **RESOLVED 2026-09-01** | **No TTI override exists, ever.** Confirmed by the project owner: `FR-28`/`FR-71` stand as written and UJ §5.4 must be corrected to match. A unit cannot reach `available` until every mandatory TTI test is `non_reactive`; this is enforced by the `guard_unit_release` trigger, not only in application code. `WI-49` implements no override path and `WI-97` has no override to audit. | UJ Q4 vs PRD `FR-28`/`FR-71` | `WI-49` · `WI-97` | ~~Blocker~~ — cleared | Clinical lead + director | **Answered: no override** |
 | **OD-19** | **Is a directed / autologous donation flow in scope?** It needs a reservation on `blood_units` for a named recipient, which the model does not currently express. | Schema Q2 | `WI-45` · `WI-70` | No | Product | Not modelled |
 | **OD-20** | **Are units transferred between centers?** If so `blood_units` needs `current_center_id` distinct from the collection center, plus transfer events. | Schema Q3 | `FR-43` (deferred beyond this plan) | No | Product | Deferred to "Later" |
 | **OD-21** | **Does the lab need Rh phenotype / antibody screening beyond ABO+D** (Kell, Duffy…)? `abo_compatibility` alone becomes insufficient. | Schema Q4 | `WI-48` · `WI-70` | No | Clinical | ABO+D only |
@@ -956,8 +956,8 @@ carried with the stated default, but the decision must be recorded before the de
 
 If only three questions get asked before work starts, ask these:
 
-1. **`OD-14` — the timezone.** It is a one-sentence answer and it blocks the largest migration in the plan.
-2. **`OD-18` — emergency TTI override.** Two sibling documents currently disagree. It is a clinical safety position, and `WI-49` cannot be designed correctly without it.
+1. ~~**`OD-14` — the timezone.**~~ **Answered 2026-09-01: `Africa/Douala`.**
+2. ~~**`OD-18` — emergency TTI override.**~~ **Answered 2026-09-01: no override, ever.** `USER_JOURNEY.md` §5.4 has been corrected to match `FR-28`/`FR-71`.
 3. **`OD-10` — launch languages.** Not urgent-feeling, and the single most expensive thing on this list to retrofit. It touches every UI work item.
 
 ---

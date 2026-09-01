@@ -39,7 +39,7 @@ legacy scope; it will be rebaselined against the new scope at the `WI-06` bounda
 | Backend API (CRUD)       |  85%   | CRUD + `POST /login`, bcrypt, validation, transactional confirm. Missing: appt/request delete endpoints |
 | Frontend UI / pages      |  97%   | Design refinement pass: Outfit font, tinted shadows, grain overlay, staggered layouts, richer empty/loading states, custom 404, legal pages, OG meta, skip-to-content |
 | Auth & Security          |  70%   | + CORS allowlist, ownership bypass closed, secret hygiene, fail-fast config. TODO: sign the cookie (P1-1), real roles (P1-3) |
-| Data model / DB          |  75%   | Hashed passwords, no leakage; migrations tool adopted (`000000_baseline`). Still no roles column — `WI-13` |
+| Data model / DB          |  80%   | Migrations `000000`–`000003` applied and round-tripped against real data: 21 enums, `users` + `donor_profiles` + `migration_rejects` with backfill, facilities & reference tables. Six-role `user_role` enum exists. Remaining: `000004`–`000012` (`WI-14`–`WI-16`) |
 | DevOps / Docker          |  92%   | + golang-migrate, `migrate` compose service, env-injected secrets, server timeouts, graceful shutdown, structured logs, `/healthz` + `/readyz` |
 | Testing                  |  15%   | CI skeleton (gofmt, vet, build, golangci-lint, govulncheck, tsc, eslint, npm audit, gitleaks, migrate up/down/up). No unit tests yet — `WI-29` |
 | Documentation            |  90%   | Full planning set (8,100+ lines): PRD, TRD, User Journey, UI/UX Brief, DB Schema, Implementation Plan — all cross-referenced by FR/NFR/WI ID |
@@ -176,6 +176,26 @@ All four P0 findings below are fixed and covered by an acceptance check. Origina
 ---
 
 ## Changelog
+- **2026-09-01** — **Phase 1 started; `WI-13` complete** (migrations `000001`–`000003`).
+  Two blocking decisions answered by the project owner and recorded: **`OD-14` deployment
+  timezone = `Africa/Douala`** (WAT, UTC+1, no DST), and **`OD-18` = no TTI override, ever** —
+  `USER_JOURNEY.md` §5.4 corrected so it no longer contradicts `FR-28`/`FR-71`.
+  Migrations landed: `000001` (4 extensions, 21 enum types), `000002` (`users`, `donor_profiles`,
+  `migration_rejects` + backfill from `donors`), `000003` (`donation_centers`, `storage_locations`,
+  `hospitals`, `policies`, `test_types`, `abo_compatibility`, the `users.hospital_id` FK, and a
+  `MAIN` placeholder center on `Africa/Douala`).
+  **Verified against the live database holding real donor rows**, not an empty schema:
+  5 legacy donors → 4 `users` + 1 quarantined (`missing_password`), reconciling exactly; donor ids
+  preserved as user ids (2,3,4,5) so `requests`/`appointments` FKs stay valid; free-text legacy
+  values normalised (`'M'`→`male`, `'+'`→`positive`); `up → down → up` round trip clean with
+  `donors` untouched throughout.
+  **Two defects found and fixed in the documented migration:** (1) the schema doc's prose promised
+  that rows with an unrecognised password hash are quarantined, but the SQL only tested NULL/empty —
+  a non-empty plaintext password would have aborted the whole migration on `users_hash_not_plain`;
+  the quarantine predicate now checks hash *and* email format, so the reject filter and the users
+  filter agree exactly. (2) Added a pre-flight guard for case-only duplicate emails (`donors.email`
+  is `TEXT`, `users.email` is `CITEXT`), **tested by injecting a duplicate**, with the operator
+  recovery procedure (`force` → resolve → `up`) documented in the migration itself.
 - **2026-09-01** — **Phase 0 complete (`WI-01`…`WI-10`).** Security and platform hygiene, verified
   against a running stack (12/12 acceptance checks): DSN redacted in logs (`safeDSN`); the
   `getAppointment` ownership bypass closed — owner `200`, non-owner `404`, missing param `400`,
