@@ -30,18 +30,24 @@ donation appointments, and an admin confirms them into scheduled appointments.
 > inventory. Of the 15 steps in the vein-to-vein master flow (`USER_JOURNEY.md` §3), **1 exists
 > correctly, 2 partially, and 12 not at all.**
 
-**Overall: ~77% of legacy scope · ~8% of documented scope.** The area table below still measures the
-legacy scope; it will be rebaselined against the new scope at the `WI-06` boundary
+**Overall: ~77% of legacy scope · ~10% of documented scope.** The area table below still measures
+the legacy scope; it will be rebaselined against the new scope at the `WI-06` boundary
 (`IMPLEMENTATION_PLAN.md` §3), at which point several percentages deliberately go *down*.
+
+> **The app is mid-migration and does not currently work end-to-end.** As of `WI-20` the API
+> requires a verified token on every `/api/go/*` route, and the frontend still sends the old
+> unsigned `bb_session` cookie, so the donor and admin pages get 401. That is the window the plan
+> sequences between `WI-20` and `WI-19`, not a regression — but the "~77% of legacy scope" figure
+> describes the code, not a running product, until `WI-19` lands.
 
 | Area                     | Status | Notes |
 |--------------------------|:------:|-------|
-| Backend API (CRUD)       |  88%   | Layered structure live (`cmd/api`, `internal/{domain,service,store,http}`); `donors` served through it with pagination + search; everything else via the shrinking `internal/legacy` shim. Approving a request is now a **status transition, not a DELETE** |
+| Backend API (CRUD)       |  89%   | Layered structure live (`cmd/api`, `internal/{domain,service,store,http}`); `donors` served through it with pagination + search; everything else via the shrinking `internal/legacy` shim. Approving a request is now a **status transition, not a DELETE** |
 | Frontend UI / pages      |  97%   | Design refinement pass: Outfit font, tinted shadows, grain overlay, staggered layouts, richer empty/loading states, custom 404, legal pages, OG meta, skip-to-content |
-| Auth & Security          |  82%   | **ES256 JWT + rotating refresh with reuse detection** (`WI-17`), bcrypt cost 12, `token_version` invalidation, server-side session families. TODO: wire verification into request handling (`WI-20`), remove the hardcoded admin (`WI-18`), frontend session (`WI-19`) |
-| Data model / DB          |  97%   | **Schema complete.** Migrations `000000`–`000012` verified `up → down -all → up` on a fresh database: 26 tables, 21 enums, 4 views, 82 indexes, 18 triggers, 43 FKs, 14 policy rows. Remaining: `000013` drop-legacy-donors, deliberately deferred to `WI-37` |
+| Auth & Security          |  90%   | **ES256 JWT + rotating refresh** (`WI-17`) now **verified on every request**, with the full TRD §7.6 permission matrix and §7.7 ownership enforced as middleware (`WI-20`). Ownership comes from the `sub`/`cid`/`hid` claims — never from a query parameter. TODO: remove the hardcoded admin (`WI-18`), frontend session (`WI-19`) |
+| Data model / DB          |  97%   | **Schema complete.** Migrations `000000`–`000015` verified `up → down -all → up` on a fresh database: 26 tables, 21 enums, 4 views, 82 indexes, 18 triggers, 43 FKs, 14 policy rows. Remaining: `000013` drop-legacy-donors, deliberately deferred to `WI-37` |
 | DevOps / Docker          |  92%   | + golang-migrate, `migrate` compose service, env-injected secrets, server timeouts, graceful shutdown, structured logs, `/healthz` + `/readyz` |
-| Testing                  |  15%   | CI skeleton (gofmt, vet, build, golangci-lint, govulncheck, tsc, eslint, npm audit, gitleaks, migrate up/down/up). No unit tests yet — `WI-29` |
+| Testing                  |  22%   | CI skeleton (gofmt, vet, build, golangci-lint, govulncheck, tsc, eslint, npm audit, gitleaks, migrate up/down/up). Unit tests for the domain (ABO, blood groups, seed cross-check, RBAC matrix + transitions) and the authorization middleware — **all 660 matrix cells asserted over HTTP, granted and denied**. Still no service, handler or E2E tests — `WI-29` |
 | Documentation            |  90%   | Full planning set (8,100+ lines): PRD, TRD, User Journey, UI/UX Brief, DB Schema, Implementation Plan — all cross-referenced by FR/NFR/WI ID |
 
 ### Planning documents (added 2026-09-01)
@@ -100,6 +106,10 @@ schema doc; route paths by the user journey. Other documents cite, never redefin
 - [x] Custom 404 page
 - [x] Privacy policy and terms of service pages
 - [x] Signed session token — ES256 JWT, backend-issued (`WI-17`)
+- [x] Backend verifies it on every request — `Authenticate` middleware (`WI-20`)
+- [x] RBAC: the TRD §7.6 matrix enforced as middleware, deny by default (`WI-20`)
+- [x] Ownership derived from the token, not from `?donor_id=` (§7.7, closes A14 properly) (`WI-20`)
+- [x] `users.center_id` → the `cid` claim, so `ctr`-scoped grants actually resolve (`WI-20`)
 - [ ] Frontend verifies it (`proxy.ts` still parses the old cookie — `WI-19`)
 - [x] First automated tests (domain: ABO compatibility, blood-group parsing, seed cross-check)
 - [x] Architecture dependency rule enforced in CI (`archcheck.sh`)
@@ -143,7 +153,10 @@ All four P0 findings below are fixed and covered by an acceptance check. Origina
 0a. ~~**Database password printed to logs.**~~ → `safeDSN()` redacts it; CI gate added and tested. `backend/main.go:71` — `fmt.Println("Connected using DSN:", dsn)`
     and the DSN embeds the credentials. Every container boot leaks them.
     _Fix:_ redact before logging, or drop the line. (`IMPLEMENTATION_PLAN.md` `WI-01`)
-0b. ~~**Authorization bypass in `getAppointment`.**~~ → ownership is unconditional; owner 200 / non-owner 404 / no-param 400, verified. `backend/main.go:42-46` gates the ownership check on
+0b. ~~**Authorization bypass in `getAppointment`.**~~ → ownership is unconditional; owner 200 / non-owner 404 / no-param 400, verified.
+    **Fully closed by `WI-20` (2026-09-01):** the check now compares against the token's `sub`
+    claim, not against `?donor_id=`. `WI-02` had made the check unconditional but still trusted a
+    caller-supplied value, so a donor could still assert someone else's identity. `backend/main.go:42-46` gates the ownership check on
     `if donorId != ""`, so it only runs when the *caller volunteers* `?donor_id=`. Omitting the
     parameter returns **any** donor's appointment. The guard is opt-in by the attacker.
     _Fix:_ derive identity from the session, never from a query parameter. (`WI-02`)
@@ -154,13 +167,19 @@ All four P0 findings below are fixed and covered by an acceptance check. Origina
     and invisible to anyone cloning the repo. _Decision required._ (`WI-06`)
 
 ### P1 — Remaining
-1. **Session cookie is plain JSON** (`{role,id}`) — not signed/encrypted, so it's forgeable.
-   _Fix:_ sign with an HMAC secret or switch to a JWT / encrypted cookie (e.g. `jose`).
-2. **Open CORS (`Access-Control-Allow-Origin: *`).**
-   _Fix:_ restrict to the frontend origin.
-3. **Admin is still a hardcoded credential** in the login action.
-   _Fix:_ promote admin to a real `donors` row with a `role` column.
-4. **No appointment/request delete or cancel** (backend + UI).
+1. **The *frontend* session cookie is still plain JSON** (`bb_session` = `{role,id}`), forgeable.
+   The backend half is done — it issues and verifies an ES256 JWT (`WI-17`) and authorizes every
+   request against it (`WI-20`) — but `bbank/src/lib/session.ts` and `proxy.ts` still parse the old
+   cookie. _Fix:_ `jose` ES256 verification against `/api/v1/auth/public-key` (`WI-19`).
+   **Until then `/api/go/*` returns 401 to the frontend:** the API requires a token the frontend
+   does not yet send.
+2. **Admin is still a hardcoded credential** in the login server action (`WI-18`).
+   _Fix:_ bootstrap the first admin from a one-time invite; add invite / suspend / role-change.
+3. **No appointment/request delete or cancel** (backend + UI).
+   The authorization for it now exists — `cancel` is a declared transition for donors, staff and
+   admin — but no endpoint or UI calls it yet.
+
+_Resolved since this list was written:_ open CORS (now an explicit allowlist with `Vary: Origin`).
 
 ### P2 — Polish & DX
 5. **No automated tests / CI / lint gate.** A manual E2E smoke was run; add Go handler tests + a Playwright happy-path.
@@ -170,15 +189,61 @@ All four P0 findings below are fixed and covered by an acceptance check. Origina
 
 ## Suggested Next Steps (sequenced)
 
-1. Sign/encrypt the session cookie (HMAC secret or JWT) — closes the last big auth gap.
-2. Add a `role` column; replace the hardcoded admin login.
-3. Lock CORS to the frontend origin.
-4. Add appointment/request cancel + admin donor edit/delete UI.
-5. First automated test pass (Go handler tests + one Playwright E2E), then CI.
+1. **`WI-19` — frontend session migration.** Now the immediate blocker, not merely the next item:
+   the backend requires a token the frontend does not send, so the donor and admin pages are dark
+   until `proxy.ts` and `session.ts` move to `jose` ES256 verification.
+2. `WI-18` — remove the hardcoded admin; invite / suspend / role-change.
+3. `WI-21`/`WI-22` — `/api/v1` prefix and envelopes; migrate requests and appointments out of
+   `internal/legacy`, where the ownership rules currently live as hand-written SQL predicates.
+4. `WI-30` — the Phase 1 safety regression suite, now that the RBAC half of it exists.
+5. Appointment/request cancel endpoints + admin donor edit/delete UI.
 
 ---
 
 ## Changelog
+- **2026-09-01** — **`WI-20` complete: RBAC middleware and ownership from the token.**
+  The TRD §7.6 permission matrix now lives in `internal/domain/rbac.go` as **data** — 22 resources ×
+  6 roles × 5 actions — rather than as `if role == "admin"` scattered through handlers. `domain`
+  imports nothing, so the entire matrix is unit-testable with no database, server or token.
+  **`X` is checked twice.** The matrix writes a donor's cell as `X-cancel` and staff's as
+  `X-approve/reject`: both hold X. A single Execute check would therefore let a donor **approve
+  their own donation request**, deleting the review step the application exists to perform. So
+  `CanExecute(role, resource, transition)` gates the named transition, and a transition nobody has
+  declared is denied rather than assumed harmless.
+  **Ownership (§7.7) is now derived from the verified token.** `middleware.Permits` evaluates the
+  granted scope — `own` / `ctr` / `hosp` / `agg` — against the row's owning columns, and a
+  violation answers **404, not 403**, because a 403 confirms the record exists.
+  **This finishes what `WI-02` could only patch.** That hotfix made the appointment ownership check
+  unconditional but still compared against `?donor_id=`, a value the caller supplied — a bypass fix,
+  not authorization. The comparison is now against the `sub` claim, so asserting somebody else's
+  identity is not something a request can express. `getAppointment` no longer reads `donor_id` at
+  all; on list endpoints it survives only as a filter for callers already scoped wider than one
+  donor, and it can narrow a result set but never widen it.
+  **Migration `000015` gives the `cid` claim a source column.** `users` had `hospital_id` but no
+  `center_id`, so `cid` had been signed as `null` on every token since `WI-17` while the matrix
+  scoped **every** staff grant to `ctr`. The middleware fails closed on a null centre, which meant a
+  staff account would have been able to see nothing at all. The column is asymmetric with
+  `hospital_id` on purpose: mandatory for `staff`, forbidden for donors/admins/hospital users,
+  optional for `lab_tech` and `inventory_manager`.
+  Two further defects fixed while in there: a donor's own-scope donor listing returned **500**
+  instead of an empty list for a user with no profile row, and `createRequest` took `donor_id`
+  **from the request body** and looked the name up in the pre-migration `donors` table rather than
+  in `donor_profiles`, the table the foreign key actually references.
+  **Tests:** the matrix is asserted over real HTTP through the middleware — **165 granted and 495
+  denied cells, all 660** — plus structural invariants (the audit log is read-only for every role
+  including admin; a hospital user gets aggregate inventory only; an unknown role or resource
+  denies), transition rules, and the §7.7 scope table.
+  **Verified end-to-end against the running stack** with five throwaway accounts (two donors, two
+  staff at different centres, one admin), since a matrix that passes its unit tests can still be
+  mounted on the wrong routes: anonymous → 401 everywhere; a donor reading another donor → 404;
+  a donor's list narrowed to itself; staff seeing only their own centre's requests and appointments;
+  a donor approving their own request → 403; staff approving another centre's request → 404;
+  `?donor_id=16` from donor B → 404; and posting `{"donor_id":17}` as donor A creating a row for
+  **16**. Migration `000015` verified `up → down → up`, and both halves of the role/centre
+  constraint verified to reject. Fixtures removed afterwards.
+  **Consequence for the frontend:** `/api/go/*` now requires a token, and `bbank/` still sets the
+  old unsigned `bb_session` cookie. **The donor and admin pages will 401 until `WI-19` lands** —
+  that is the migration window the plan sequences, not a regression.
 - **2026-09-01** — **`WI-17` complete: ES256 JWT + rotating refresh tokens.**
   Migration `000014` adds `sessions` (refresh-token families, SHA-256 hashed — the token itself is
   never stored) and `users.token_version`. `POST /api/v1/auth/{login,refresh,logout}` plus

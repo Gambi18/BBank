@@ -2,12 +2,12 @@
 
 -- name: GetUserForLogin :one
 SELECT u.id, u.email, u.password_hash, u.role, u.status, u.token_version,
-       u.hospital_id, u.failed_login_count, u.locked_until
+       u.center_id, u.hospital_id, u.failed_login_count, u.locked_until
 FROM users u
 WHERE u.email = sqlc.arg('email')::citext;
 
 -- name: GetUserForToken :one
-SELECT id, role, status, token_version, hospital_id
+SELECT id, role, status, token_version, center_id, hospital_id
 FROM users WHERE id = $1;
 
 -- name: TouchLastLogin :exec

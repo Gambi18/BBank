@@ -96,3 +96,18 @@ status transition while there.
 **Prevention:** a schema migration is not verified by testing the migration. It is verified by
 exercising the code that reads the changed tables. Add an endpoint smoke test to the definition of
 done for any migration that renames or drops a column.
+
+### 2026-09-01 — Signed a token claim that had no source column
+**Cause:** `WI-17` implemented the §7.3 claim set including `cid`, and wired `CenterID` through
+`TokenSubject` → `Claims` → JSON. Every layer was present and the tests passed. But `users` has no
+`center_id` column, so `cid` was signed as `null` on every token ever issued. The claim existed as
+plumbing with nothing connected to the inlet.
+**Course:** invisible until `WI-20` used it. The RBAC matrix scopes **every** staff grant to `ctr`,
+and the middleware fails closed on a null centre — so a `staff` account would have authenticated
+successfully and then been able to see nothing at all. It would have looked like an RBAC bug.
+**Solution:** migration `000015` adds `users.center_id` with a role-dependent CHECK, and login and
+refresh both populate the claim from it.
+**Prevention:** a claim, config key or DTO field is not implemented when the type compiles and the
+value flows. Trace it back to where the value is *born* — a column, an env var, a request — and
+assert a non-null one end to end. The unit tests passed precisely because they supplied the value
+themselves. Same shape as the "verified the migration, not the code that reads it" entry above.

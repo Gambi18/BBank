@@ -117,7 +117,7 @@ func (q *Queries) GetSessionByTokenHash(ctx context.Context, tokenHash []byte) (
 const getUserForLogin = `-- name: GetUserForLogin :one
 
 SELECT u.id, u.email, u.password_hash, u.role, u.status, u.token_version,
-       u.hospital_id, u.failed_login_count, u.locked_until
+       u.center_id, u.hospital_id, u.failed_login_count, u.locked_until
 FROM users u
 WHERE u.email = $1::citext
 `
@@ -129,6 +129,7 @@ type GetUserForLoginRow struct {
 	Role             UserRole
 	Status           UserStatus
 	TokenVersion     int32
+	CenterID         *int64
 	HospitalID       *int64
 	FailedLoginCount int16
 	LockedUntil      pgtype.Timestamptz
@@ -145,6 +146,7 @@ func (q *Queries) GetUserForLogin(ctx context.Context, email string) (GetUserFor
 		&i.Role,
 		&i.Status,
 		&i.TokenVersion,
+		&i.CenterID,
 		&i.HospitalID,
 		&i.FailedLoginCount,
 		&i.LockedUntil,
@@ -153,7 +155,7 @@ func (q *Queries) GetUserForLogin(ctx context.Context, email string) (GetUserFor
 }
 
 const getUserForToken = `-- name: GetUserForToken :one
-SELECT id, role, status, token_version, hospital_id
+SELECT id, role, status, token_version, center_id, hospital_id
 FROM users WHERE id = $1
 `
 
@@ -162,6 +164,7 @@ type GetUserForTokenRow struct {
 	Role         UserRole
 	Status       UserStatus
 	TokenVersion int32
+	CenterID     *int64
 	HospitalID   *int64
 }
 
@@ -173,6 +176,7 @@ func (q *Queries) GetUserForToken(ctx context.Context, id int64) (GetUserForToke
 		&i.Role,
 		&i.Status,
 		&i.TokenVersion,
+		&i.CenterID,
 		&i.HospitalID,
 	)
 	return i, err

@@ -96,6 +96,7 @@ func (s *AuthService) Login(ctx context.Context, in LoginInput) (*TokenPair, err
 	return s.issuePair(ctx, issueInput{
 		userID:       u.ID,
 		role:         string(u.Role),
+		centerID:     u.CenterID,
 		hospitalID:   u.HospitalID,
 		tokenVersion: u.TokenVersion,
 		familyID:     platform.NewID("fam"),
@@ -105,8 +106,12 @@ func (s *AuthService) Login(ctx context.Context, in LoginInput) (*TokenPair, err
 }
 
 type issueInput struct {
-	userID       int64
-	role         string
+	userID int64
+	role   string
+	// centerID and hospitalID become the `cid` and `hid` claims. They are the
+	// only source of ctr/hosp scoping in the RBAC middleware (TRD §7.6/§7.7),
+	// so a nil here is not cosmetic: it denies that role every scoped row.
+	centerID     *int64
 	hospitalID   *int64
 	tokenVersion int32
 	familyID     string
@@ -123,6 +128,7 @@ func (s *AuthService) issuePair(ctx context.Context, in issueInput) (*TokenPair,
 		UserID:       in.userID,
 		SessionID:    sessionID,
 		Role:         in.role,
+		CenterID:     in.centerID,
 		HospitalID:   in.hospitalID,
 		TokenVersion: in.tokenVersion,
 	}, time.Now())
@@ -199,7 +205,7 @@ func (s *AuthService) Refresh(ctx context.Context, refreshToken, ip, userAgent s
 	}
 
 	return s.issuePair(ctx, issueInput{
-		userID: u.ID, role: string(u.Role), hospitalID: u.HospitalID,
+		userID: u.ID, role: string(u.Role), centerID: u.CenterID, hospitalID: u.HospitalID,
 		tokenVersion: u.TokenVersion, familyID: sess.FamilyID,
 		ip: ip, userAgent: userAgent,
 	})

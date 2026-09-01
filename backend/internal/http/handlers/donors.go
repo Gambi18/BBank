@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"strconv"
 
+	"bbank/internal/domain"
 	"bbank/internal/http/dto"
 	"bbank/internal/http/response"
+	"bbank/internal/middleware"
 	"bbank/internal/service"
 	"bbank/internal/store"
 
@@ -23,10 +25,28 @@ func NewDonorHandler(svc *service.DonorService) *DonorHandler { return &DonorHan
 
 func (h *DonorHandler) Routes() chi.Router {
 	r := chi.NewRouter()
-	r.Get("/", h.list)
-	r.Get("/{id}", h.get)
-	r.Get("/{id}/eligibility", h.eligibility)
+	r.Use(middleware.RequireAuth)
+	r.With(middleware.RequirePermission("donor_profiles", domain.Read)).Get("/", h.list)
+	r.With(middleware.RequirePermission("donor_profiles", domain.Read)).Get("/{id}", h.get)
+	r.With(middleware.RequirePermission("donor_profiles", domain.Read)).Get("/{id}/eligibility", h.eligibility)
 	return r
+}
+
+// resolveOwned enforces TRD §7.7: the donor id in a URL is NOT identity.
+//
+// If the caller's granted scope is "own", the requested id must equal the id in
+// their token. A mismatch returns 404, not 403 — a 403 would confirm that the
+// other donor exists.
+//
+// This is the general form of the WI-02 hotfix. There, ownership was compared
+// against a query parameter the caller supplied; here it comes from a verified
+// token and cannot be influenced by the request at all.
+func resolveOwned(w http.ResponseWriter, r *http.Request, requested int64) bool {
+	if middleware.Permits(r.Context(), middleware.Row{OwnerID: requested}) {
+		return true
+	}
+	response.NotFound(w, r)
+	return false
 }
 
 func (h *DonorHandler) list(w http.ResponseWriter, r *http.Request) {
@@ -49,6 +69,29 @@ func (h *DonorHandler) list(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		p.Offset = int32(n)
+	}
+
+	// A donor's "own" scope makes a full listing meaningless; narrow it to self.
+	if middleware.ScopeFrom(r.Context()) == domain.ScopeOwn {
+		if id, ok := middleware.IdentityFrom(r.Context()); ok {
+			row, err := h.svc.Get(r.Context(), id.UserID)
+			if errors.Is(err, service.ErrNotFound) {
+				// A user with no donor profile is an empty list, not a 500.
+				response.Paged(w, []dto.DonorSummary{}, 0, 1, 0)
+				return
+			}
+			if err != nil {
+				response.Internal(w, r, err)
+				return
+			}
+			response.Paged(w, []dto.DonorSummary{{
+				ID: row.ID, Email: row.Email, FullName: row.FullName,
+				BloodGroup: enumPtr(row.BloodGroup), Rhesus: enumPtr(row.Rhesus),
+				ContactPhone: row.ContactPhone, TotalDonations: row.TotalDonations,
+				Status: string(row.Status),
+			}}, 1, 1, 0)
+			return
+		}
 	}
 
 	rows, total, err := h.svc.List(r.Context(), p)
@@ -83,6 +126,9 @@ func (h *DonorHandler) get(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !resolveOwned(w, r, id) {
+		return
+	}
 	row, err := h.svc.Get(r.Context(), id)
 	if errors.Is(err, service.ErrNotFound) {
 		response.NotFound(w, r)
@@ -115,6 +161,9 @@ func (h *DonorHandler) get(w http.ResponseWriter, r *http.Request) {
 func (h *DonorHandler) eligibility(w http.ResponseWriter, r *http.Request) {
 	id, ok := idParam(w, r)
 	if !ok {
+		return
+	}
+	if !resolveOwned(w, r, id) {
 		return
 	}
 	row, err := h.svc.Eligibility(r.Context(), id)

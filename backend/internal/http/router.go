@@ -36,11 +36,18 @@ type Deps struct {
 // alias; until then the legacy prefix stays authoritative so nothing breaks.
 func NewRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
+	q := store.New(d.Pool)
+	authSvc := service.NewAuthService(q, d.Signer)
 
+	// chi requires every middleware to be registered before any route, so the
+	// whole stack is declared here in one place.
 	r.Use(middleware.RequestID)
 	r.Use(middleware.AccessLog)
 	r.Use(middleware.CORS(d.Cfg.AllowedOrigins))
 	r.Use(middleware.JSONContentType)
+	// Attaches identity when a valid token is present. Endpoints decide whether
+	// they require it; this only verifies and populates.
+	r.Use(middleware.Authenticate(authSvc))
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -58,11 +65,8 @@ func NewRouter(d Deps) http.Handler {
 		_, _ = w.Write([]byte(`{"status":"ready"}`))
 	})
 
-	q := store.New(d.Pool)
-
 	// Auth lands on the canonical /api/v1 prefix from the start — it is new, so
 	// there is no legacy client to keep compatible (WI-21 moves the rest).
-	authSvc := service.NewAuthService(q, d.Signer)
 	r.Mount("/api/v1/auth", handlers.NewAuthHandler(authSvc, d.Cfg.CookieSecure).Routes())
 
 	// The frontend needs the PUBLIC key to verify tokens in proxy.ts. Serving it

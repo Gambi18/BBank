@@ -211,6 +211,7 @@ erDiagram
         text        password_hash "bcrypt or argon2, CHECK-enforced"
         user_role   role
         user_status status
+        bigint      center_id     FK "home centre; the `cid` claim"
         bigint      hospital_id   FK "non-null iff role = hospital_user"
     }
     donor_profiles {
@@ -506,6 +507,7 @@ CREATE TABLE users (
     role               user_role   NOT NULL DEFAULT 'donor',
     status             user_status NOT NULL DEFAULT 'pending_verification',
     phone              TEXT,
+    center_id          BIGINT,                     -- FK added after donation_centers exists
     hospital_id        BIGINT,                     -- FK added after hospitals exists
     last_login_at      TIMESTAMPTZ,
     failed_login_count SMALLINT    NOT NULL DEFAULT 0,
@@ -623,6 +625,27 @@ ALTER TABLE users
         REFERENCES hospitals(id) ON DELETE RESTRICT,
     ADD CONSTRAINT users_hospital_only_for_hospital_user
         CHECK ((role = 'hospital_user') = (hospital_id IS NOT NULL));
+
+-- The `cid` claim (TRD §7.3) and the `ctr` scope of the RBAC matrix (§7.6).
+-- Asymmetric with hospital_id on purpose: `staff` MUST have a home centre,
+-- because every one of their matrix cells is centre-scoped and a staff account
+-- without one can reach nothing. `lab_tech` and `inventory_manager` MAY have
+-- one — they work somewhere, but the matrix grants them cross-centre reads, so
+-- the centre is a fact about them rather than a limit on them. Donors, admins
+-- and hospital users must not have one.
+ALTER TABLE users
+    ADD CONSTRAINT users_center_fk FOREIGN KEY (center_id)
+        REFERENCES donation_centers(id) ON DELETE RESTRICT,
+    ADD CONSTRAINT users_center_matches_role
+        CHECK (
+            CASE role
+                WHEN 'staff'         THEN center_id IS NOT NULL
+                WHEN 'donor'         THEN center_id IS NULL
+                WHEN 'admin'         THEN center_id IS NULL
+                WHEN 'hospital_user' THEN center_id IS NULL
+                ELSE TRUE
+            END
+        );
 
 -- Versioned, region-scoped clinical and operational thresholds. See §12.1.
 CREATE TABLE policies (
@@ -1187,6 +1210,7 @@ CREATE INDEX notifications_user_idx   ON notifications (user_id, created_at DESC
 
 CREATE INDEX users_role_status_idx ON users (role, status);
 CREATE INDEX users_hospital_idx    ON users (hospital_id) WHERE hospital_id IS NOT NULL;
+CREATE INDEX users_center_idx      ON users (center_id, role) WHERE center_id IS NOT NULL;
 ```
 
 `jsonb_path_ops` rather than the default `jsonb_ops`: it is roughly half the size and
@@ -1770,16 +1794,22 @@ backend/migrations/
   000011_indexes.up.sql                     000011_indexes.down.sql
   000012_seed_reference_data.up.sql         000012_seed_reference_data.down.sql
   000013_fix_donation_counter.up.sql        000013_fix_donation_counter.down.sql
-  000014_drop_legacy_donors.up.sql          000014_drop_legacy_donors.down.sql
+  000014_auth_sessions.up.sql               000014_auth_sessions.down.sql
+  000015_user_home_center.up.sql            000015_user_home_center.down.sql
+  0000NN_drop_legacy_donors.up.sql          0000NN_drop_legacy_donors.down.sql
 ```
+
+The last one is unnumbered on purpose: dropping `donors` is deferred to `WI-37`
+(`IMPLEMENTATION_PLAN.md`), so it takes whatever number is next when that release
+happens rather than reserving one now.
 
 Run: `migrate -path backend/migrations -database "$DATABASE_URL" up`.
 
 ### 11.2 The ordered plan
 
-Every step is reversible. Steps 1–12 can be rolled back cleanly; step 13 is the one-way
-door and is deliberately a **separate release**, run only after the new code has been live
-and verified.
+Every step is reversible. Steps 1–15 can be rolled back cleanly; `drop_legacy_donors` is the
+one-way door and is deliberately a **separate release** (`WI-37`), run only after the new code
+has been live and verified.
 
 | # | Migration | Does | Down migration | Reversible? |
 |---|---|---|---|---|
@@ -1795,7 +1825,10 @@ and verified.
 | 10 | `views_and_triggers` | All functions, triggers, and the four views (§8, §9). | `DROP VIEW`, `DROP TRIGGER`, `DROP FUNCTION` | Yes |
 | 11 | `indexes` | Every index in §7. Use `CREATE INDEX CONCURRENTLY` in production, which means these statements must run **outside a transaction** — `golang-migrate` supports this with the `x-no-transaction` flag in the DSN or by splitting into single-statement files. | `DROP INDEX CONCURRENTLY` | Yes |
 | 12 | `seed_reference_data` | `policies`, `test_types`, `abo_compatibility`, real `donation_centers` (§12). Idempotent via `ON CONFLICT DO NOTHING`. | `DELETE` the seeded keys | Yes |
-| 13 | `drop_legacy_donors` | `DROP TABLE donors`. **Separate release.** Only after the app runs entirely on `users` + `donor_profiles` in production and a verified backup exists. | Recreate `donors` and repopulate by joining `users` + `donor_profiles` — lossy for `password` if hashes were rotated | Effectively one-way |
+| 13 | `fix_donation_counter` | Correct the `donations` → `donor_profiles.total_donations` counter trigger. | Restore the previous trigger body | Yes |
+| 14 | `auth_sessions` | Create `sessions` (refresh-token families, SHA-256 hashes only); add `users.token_version`, `failed_login_count`, `locked_until`. Supports `WI-17`. | `DROP TABLE sessions`, drop the columns | Yes |
+| 15 | `user_home_center` | Add `users.center_id` + FK + the role/centre CHECK + `users_center_idx`. Gives the `cid` claim (TRD §7.3) a source column, without which every `ctr`-scoped grant in the RBAC matrix denies. Supports `WI-20`. | Drop the index, both constraints, then the column | Yes |
+| — | `drop_legacy_donors` | `DROP TABLE donors`. **Separate release.** Only after the app runs entirely on `users` + `donor_profiles` in production and a verified backup exists. | Recreate `donors` and repopulate by joining `users` + `donor_profiles` — lossy for `password` if hashes were rotated | Effectively one-way |
 
 ### 11.3 `donors` → `users` + `donor_profiles`
 

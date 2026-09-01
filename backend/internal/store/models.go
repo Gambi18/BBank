@@ -1415,4 +1415,6 @@ type User struct {
 	DeactivatedAt    pgtype.Timestamptz
 	// Incremented on role change, password change or forced logout. Carried in the JWT `ver` claim; a mismatch fails verification, invalidating every outstanding access token for this user immediately. This is the escape hatch from the 15-minute revocation window.
 	TokenVersion int32
+	// Home donation centre. Signed into the access token as the `cid` claim (TRD §7.3) and used by the RBAC middleware as the mandatory WHERE clause for every ctr-scoped grant (§7.6).
+	CenterID *int64
 }

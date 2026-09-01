@@ -10,6 +10,7 @@
 package legacy
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -18,9 +19,47 @@ import (
 	"strconv"
 	"strings"
 
+	"bbank/internal/domain"
+	"bbank/internal/middleware"
+
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// scopeClause turns the scope granted by the RBAC middleware into a mandatory
+// SQL predicate (TRD §7.7). The caller cannot widen it: a `?donor_id=` in the
+// query string is a filter, never an identity.
+//
+// ok=false means the scope cannot be satisfied at all — an unbounded read must
+// then return nothing, not everything. That direction of failure is the point.
+func scopeClause(ctx context.Context, ownerCol, centerCol string) (string, []any, bool) {
+	id, authed := middleware.IdentityFrom(ctx)
+	if !authed {
+		return "", nil, false
+	}
+	switch middleware.ScopeFrom(ctx) {
+	case domain.ScopeAll:
+		return "", nil, true
+	case domain.ScopeOwn:
+		return " AND " + ownerCol + " = $1", []any{id.UserID}, true
+	case domain.ScopeCenter:
+		if id.CenterID == nil {
+			return "", nil, false // staff with no center sees no rows, not all rows
+		}
+		return " AND " + centerCol + " = $1", []any{*id.CenterID}, true
+	}
+	return "", nil, false
+}
+
+// rowOf adapts a nullable center column to the Row that Permits evaluates.
+func rowOf(ownerID int64, centerID sql.NullInt64) middleware.Row {
+	row := middleware.Row{OwnerID: ownerID}
+	if centerID.Valid {
+		c := centerID.Int64
+		row.CenterID = &c
+	}
+	return row
+}
 
 type Donor struct {
 	Id           int    `json:"id"`
@@ -253,9 +292,14 @@ func deleteDonor(db *sql.DB) http.HandlerFunc {
 // Request Handlers
 func getRequests(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		where, args, ok := scopeClause(r.Context(), "r.donor_id", "r.center_id")
+		if !ok {
+			_ = json.NewEncoder(w).Encode([]Request{})
+			return
+		}
 		rows, err := db.Query(`SELECT r.id, r.donor_id, p.full_name, p.legacy_last_donation, r.created_at
 		                    FROM donation_requests r JOIN donor_profiles p ON p.user_id = r.donor_id
-		                    WHERE r.status = 'pending' ORDER BY r.id`)
+		                    WHERE r.status = 'pending'`+where+` ORDER BY r.id`, args...)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -284,11 +328,17 @@ func getRequest(db *sql.DB) http.HandlerFunc {
 		var req Request
 		var lastDonation sql.NullString
 		var createdAt sql.NullString
-		err := db.QueryRow(`SELECT r.id, r.donor_id, p.full_name, p.legacy_last_donation, r.created_at
+		var centerID sql.NullInt64
+		err := db.QueryRow(`SELECT r.id, r.donor_id, r.center_id, p.full_name, p.legacy_last_donation, r.created_at
 		                       FROM donation_requests r JOIN donor_profiles p ON p.user_id = r.donor_id
-		                       WHERE r.id = $1`, id).Scan(&req.Id, &req.DonorId, &req.DonorName, &lastDonation, &createdAt)
+		                       WHERE r.id = $1`, id).Scan(&req.Id, &req.DonorId, &centerID, &req.DonorName, &lastDonation, &createdAt)
 		if err != nil {
 			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// 404, not 403 — a caller outside the scope must not learn the row exists.
+		if !middleware.Permits(r.Context(), rowOf(int64(req.DonorId), centerID)) {
+			middleware.Deny(w)
 			return
 		}
 		req.LastDonation = lastDonation.String
@@ -305,9 +355,20 @@ func createRequest(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		// Fetch donor info - handle NULL last_donation
+		// A donor raises a request for themselves and for nobody else, whatever
+		// the body says. Staff and admin may raise one on a donor's behalf, so
+		// their wider scope keeps reading donor_id from the payload.
+		if middleware.ScopeFrom(r.Context()) == domain.ScopeOwn {
+			id, _ := middleware.IdentityFrom(r.Context())
+			req.DonorId = int(id.UserID)
+		}
+
+		// Read the name from donor_profiles, the table donation_requests.donor_id
+		// actually references. Reading the pre-migration `donors` table here could
+		// succeed for a donor with no profile row and then fail the insert on the
+		// foreign key, turning a 400 into a 500.
 		var lastDonation sql.NullString
-		err := db.QueryRow("SELECT full_name, last_donation FROM donors WHERE id = $1", req.DonorId).Scan(&req.DonorName, &lastDonation)
+		err := db.QueryRow("SELECT full_name, legacy_last_donation FROM donor_profiles WHERE user_id = $1", req.DonorId).Scan(&req.DonorName, &lastDonation)
 		if err != nil {
 			http.Error(w, "Donor not found", http.StatusBadRequest)
 			return
@@ -348,11 +409,20 @@ func confirmRequest(db *sql.DB) http.HandlerFunc {
 
 		// 1. Get request details
 		var req Request
-		err = tx.QueryRow(`SELECT r.id, r.donor_id, p.full_name
+		var centerID sql.NullInt64
+		err = tx.QueryRow(`SELECT r.id, r.donor_id, r.center_id, p.full_name
 		                       FROM donation_requests r JOIN donor_profiles p ON p.user_id = r.donor_id
-		                       WHERE r.id = $1 AND r.status = 'pending'`, id).Scan(&req.Id, &req.DonorId, &req.DonorName)
+		                       WHERE r.id = $1 AND r.status = 'pending'`, id).Scan(&req.Id, &req.DonorId, &centerID, &req.DonorName)
 		if err != nil {
 			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		// RequireTransition has already established that this role may approve at
+		// all; this establishes that it may approve *this* request. Staff are
+		// center-scoped, so a request raised at another center is not theirs.
+		if !middleware.Permits(r.Context(), rowOf(int64(req.DonorId), centerID)) {
+			middleware.Deny(w)
 			return
 		}
 
@@ -398,21 +468,31 @@ func confirmRequest(db *sql.DB) http.HandlerFunc {
 // Appointment Handlers
 func getAppointments(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		donorId := r.URL.Query().Get("donor_id")
-		var rows *sql.Rows
-		var err error
-
-		if donorId != "" {
-			rows, err = db.Query(`SELECT a.id, COALESCE(a.donation_request_id, 0), a.donor_id, p.full_name,
-		                          (a.scheduled_at AT TIME ZONE 'Africa/Douala')::date
-		                   FROM appointments a JOIN donor_profiles p ON p.user_id = a.donor_id
-		                   WHERE a.donor_id = $1 ORDER BY a.scheduled_at DESC`, donorId)
-		} else {
-			rows, err = db.Query(`SELECT a.id, COALESCE(a.donation_request_id, 0), a.donor_id, p.full_name,
-		                          (a.scheduled_at AT TIME ZONE 'Africa/Douala')::date
-		                   FROM appointments a JOIN donor_profiles p ON p.user_id = a.donor_id
-		                   ORDER BY a.scheduled_at DESC`)
+		where, args, ok := scopeClause(r.Context(), "a.donor_id", "a.center_id")
+		if !ok {
+			_ = json.NewEncoder(w).Encode([]Appointment{})
+			return
 		}
+
+		// `?donor_id=` survives only as a convenience filter for callers whose
+		// scope is already wider than one donor. It can narrow the result set and
+		// never widen it, because `where` is appended first and unconditionally.
+		if middleware.ScopeFrom(r.Context()) != domain.ScopeOwn {
+			if donorId := r.URL.Query().Get("donor_id"); donorId != "" {
+				n, convErr := strconv.ParseInt(donorId, 10, 64)
+				if convErr != nil {
+					http.Error(w, "donor_id must be an integer", http.StatusBadRequest)
+					return
+				}
+				where += fmt.Sprintf(" AND a.donor_id = $%d", len(args)+1)
+				args = append(args, n)
+			}
+		}
+
+		rows, err := db.Query(`SELECT a.id, COALESCE(a.donation_request_id, 0), a.donor_id, p.full_name,
+		                          (a.scheduled_at AT TIME ZONE 'Africa/Douala')::date
+		                   FROM appointments a JOIN donor_profiles p ON p.user_id = a.donor_id
+		                   WHERE true`+where+` ORDER BY a.scheduled_at DESC`, args...)
 
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -435,46 +515,34 @@ func getAppointments(db *sql.DB) http.HandlerFunc {
 func getAppointment(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := chi.URLParam(r, "id")
-		donorId := r.URL.Query().Get("donor_id")
 
-		// WI-02 — authorization bypass fix.
+		// WI-02 -> WI-20 — the authorization bypass, closed properly.
 		//
-		// This check used to run only `if donorId != ""`, i.e. only when the caller
-		// volunteered the parameter. Omitting `?donor_id=` skipped it entirely and
-		// returned any donor's appointment. The guard was opt-in by the attacker.
-		//
-		// Ownership is now unconditional. Until the backend issues and verifies its
-		// own session (WI-17/WI-20), donor_id still arrives as a parameter, so this
-		// is a *bypass* fix rather than full authorization: a caller may still assert
-		// an identity. Deriving the donor from a verified session is Phase 1 work and
-		// must not be assumed done here.
-		if donorId == "" {
-			http.Error(w, "donor_id is required", http.StatusBadRequest)
-			return
-		}
-		dId, convErr := strconv.Atoi(donorId)
-		if convErr != nil {
-			http.Error(w, "donor_id must be an integer", http.StatusBadRequest)
-			return
-		}
-
+		// WI-02 made the ownership check unconditional but still compared against
+		// `?donor_id=`, a value the caller supplied: a bypass fix, not authorization.
+		// The comparison is now against the `sub` claim of a verified token, so
+		// asserting someone else's identity is no longer something the request can
+		// express. `?donor_id=` is not read here at all.
 		var appt Appointment
-		err := db.QueryRow(`SELECT a.id, COALESCE(a.donation_request_id, 0), a.donor_id, p.full_name,
+		var centerID sql.NullInt64
+		err := db.QueryRow(`SELECT a.id, COALESCE(a.donation_request_id, 0), a.donor_id, a.center_id, p.full_name,
 		                       (a.scheduled_at AT TIME ZONE 'Africa/Douala')::date
 		                FROM appointments a JOIN donor_profiles p ON p.user_id = a.donor_id
-		                WHERE a.id = $1`, id).Scan(&appt.Id, &appt.RequestId, &appt.DonorId, &appt.DonorName, &appt.AppointmentDate)
+		                WHERE a.id = $1`, id).Scan(&appt.Id, &appt.RequestId, &appt.DonorId, &centerID, &appt.DonorName, &appt.AppointmentDate)
 		if err != nil {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 
 		// 404, not 403: a non-owner must not learn that this appointment exists.
-		if appt.DonorId != dId {
+		if !middleware.Permits(r.Context(), rowOf(int64(appt.DonorId), centerID)) {
+			caller, _ := middleware.IdentityFrom(r.Context())
 			slog.WarnContext(r.Context(), "appointment ownership check failed",
 				slog.String("appointment_id", id),
-				slog.Int("claimed_donor_id", dId),
+				slog.Int64("caller_user_id", caller.UserID),
+				slog.String("caller_role", string(caller.Role)),
 			)
-			w.WriteHeader(http.StatusNotFound)
+			middleware.Deny(w)
 			return
 		}
 
@@ -486,13 +554,26 @@ func getAppointment(db *sql.DB) http.HandlerFunc {
 // the layered structure. `donors` is deliberately absent — it is served by
 // internal/http/handlers as the WI-11 pilot.
 func RegisterRoutes(r chi.Router, db *sql.DB) {
+	// Public: this is how a caller obtains a session in the first place.
 	r.Post(loginEndpoint, login(db))
 
-	r.Get(requestsEndpoint, getRequests(db))
-	r.Post(requestsEndpoint, createRequest(db))
-	r.Get(requestIDEndpoint, getRequest(db))
-	r.Post(confirmRequestEndpoint, confirmRequest(db))
+	// Everything else carries its cell of the TRD §7.6 matrix. RequirePermission
+	// rejects an anonymous caller with 401 before it consults the matrix, so no
+	// separate RequireAuth is needed — and a route added here without a
+	// permission would be conspicuous rather than quietly open.
+	rq := func(a domain.Action) func(http.Handler) http.Handler {
+		return middleware.RequirePermission("donation_requests", a)
+	}
+	r.With(rq(domain.Read)).Get(requestsEndpoint, getRequests(db))
+	r.With(rq(domain.Create)).Post(requestsEndpoint, createRequest(db))
+	r.With(rq(domain.Read)).Get(requestIDEndpoint, getRequest(db))
+	// Confirming is `X-approve`, which staff and admin hold and a donor does not,
+	// even on their own request (§7.6). A bare Execute check would let a donor
+	// approve themselves and delete the review step the system exists for.
+	r.With(middleware.RequireTransition("donation_requests", "approve")).
+		Post(confirmRequestEndpoint, confirmRequest(db))
 
-	r.Get(appointmentsEndpoint, getAppointments(db))
-	r.Get(appointmentIDEndpoint, getAppointment(db))
+	appt := middleware.RequirePermission("appointments", domain.Read)
+	r.With(appt).Get(appointmentsEndpoint, getAppointments(db))
+	r.With(appt).Get(appointmentIDEndpoint, getAppointment(db))
 }
