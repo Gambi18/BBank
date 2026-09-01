@@ -1,12 +1,31 @@
 // Package legacy holds the original single-file handlers, moved verbatim.
 //
-// This is the strangler fig: WI-11 moves `donors` to the layered structure
-// (domain -> store -> service -> http/handlers) while everything else keeps
-// serving from here, unchanged, so the application never breaks mid-refactor.
-// Subsequent work items (WI-22) migrate these one resource at a time; this
-// package shrinks to nothing and is then deleted.
+// This is the strangler fig: WI-11 moved `donors` to the layered structure
+// (domain -> store -> service -> http/handlers) while everything else kept
+// serving from here, so the application never broke mid-refactor. WI-22 migrates
+// what is left — donation requests and appointments — and this package is then
+// deleted.
 //
 // Do not add anything here. New code goes in the layered packages.
+//
+// **These handlers are mounted on the canonical /api/v1 paths** (WI-21). The
+// deprecated /api/go/ spelling is served by middleware.LegacyShim, which
+// rewrites the path before routing, so there is exactly one implementation of
+// each endpoint and the two spellings cannot drift apart.
+//
+// WI-21 also removed two things from this file:
+//
+//   - The five donor handlers. They stopped being routed when WI-11 moved
+//     donors to the layered path, so they had been dead code leaking driver
+//     errors at anyone who ever wired them back up. WI-22 rebuilds the writes
+//     properly against users + donor_profiles.
+//   - `POST /api/go/login`. It checked a password and returned a donor object
+//     without issuing a session, which after WI-17 is not a login at all. The
+//     shim now points the legacy path at the real handler, so old callers get a
+//     genuine ES256 session instead of a second, weaker auth path. This is a
+//     deliberate deviation from TRD §6.1, which preserves the old response body:
+//     WI-19 already migrated the only client, so there is nobody left to keep
+//     compatible, and a second password-checking code path is a liability.
 package legacy
 
 import (
@@ -17,13 +36,12 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"bbank/internal/domain"
+	"bbank/internal/http/response"
 	"bbank/internal/middleware"
 
 	"github.com/go-chi/chi/v5"
-	"golang.org/x/crypto/bcrypt"
 )
 
 // scopeClause turns the scope granted by the RBAC middleware into a mandatory
@@ -61,20 +79,6 @@ func rowOf(ownerID int64, centerID sql.NullInt64) middleware.Row {
 	return row
 }
 
-type Donor struct {
-	Id           int    `json:"id"`
-	FullName     string `json:"full_name"`
-	Email        string `json:"email"`
-	DOB          string `json:"dob"`
-	Gender       string `json:"gender"`
-	BloodGroup   string `json:"blood_group"`
-	Rhesus       string `json:"rhesus"`
-	Contact      string `json:"contact"`
-	Address      string `json:"address"`
-	Password     string `json:"password,omitempty"`
-	LastDonation string `json:"last_donation"`
-}
-
 type Request struct {
 	Id           int    `json:"id"`
 	DonorId      int    `json:"donor_id"`
@@ -91,234 +95,69 @@ type Appointment struct {
 	AppointmentDate string `json:"appointment_date"`
 }
 
+// Canonical paths (TRD §6.1). `requests` became `donation-requests` because a
+// `blood-request` — a hospital asking for units — is a different concept, and
+// reusing the word would have been a semantic trap.
 const (
-	donorsEndpoint         = "/api/go/donors"
-	donorIDEndpoint        = "/api/go/donors/{id}"
-	loginEndpoint          = "/api/go/login"
-	requestsEndpoint       = "/api/go/requests"
-	requestIDEndpoint      = "/api/go/requests/{id}"
-	confirmRequestEndpoint = "/api/go/requests/{id}/confirm"
-	appointmentsEndpoint   = "/api/go/appointments"
-	appointmentIDEndpoint  = "/api/go/appointments/{id}"
+	requestsEndpoint       = "/api/v1/donation-requests"
+	requestIDEndpoint      = "/api/v1/donation-requests/{id}"
+	approveRequestEndpoint = "/api/v1/donation-requests/{id}/approve"
+	appointmentsEndpoint   = "/api/v1/appointments"
+	appointmentIDEndpoint  = "/api/v1/appointments/{id}"
 )
 
-// config holds every value the process reads from the environment. Nothing here
-// has a credential-bearing default: missing required config is a startup failure,
-// never a silent guess. (WI-07)
-
-func login(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var creds struct {
-			Email    string `json:"email"`
-			Password string `json:"password"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		creds.Email = strings.TrimSpace(strings.ToLower(creds.Email))
-
-		var d Donor
-		var hash string
-		var lastDonation sql.NullString
-		err := db.QueryRow("SELECT id, full_name, email, dob, gender, blood_group, rhesus, contact, address, password, last_donation FROM donors WHERE email = $1", creds.Email).
-			Scan(&d.Id, &d.FullName, &d.Email, &d.DOB, &d.Gender, &d.BloodGroup, &d.Rhesus, &d.Contact, &d.Address, &hash, &lastDonation)
-		if err != nil {
-			http.Error(w, "Invalid email or password", http.StatusUnauthorized)
-			return
-		}
-
-		if bcrypt.CompareHashAndPassword([]byte(hash), []byte(creds.Password)) != nil {
-			http.Error(w, "Invalid email or password", http.StatusUnauthorized)
-			return
-		}
-
-		d.LastDonation = lastDonation.String
-		d.Password = "" // never return the hash
-		json.NewEncoder(w).Encode(d)
-	}
-}
-
-// Donor Handlers
-func getDonors(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		rows, err := db.Query("SELECT id, full_name, email, dob, gender, blood_group, rhesus, contact, address, last_donation FROM donors")
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		defer rows.Close()
-
-		donors := []Donor{}
-		for rows.Next() {
-			var d Donor
-			var lastDonation sql.NullString
-			err := rows.Scan(&d.Id, &d.FullName, &d.Email, &d.DOB, &d.Gender, &d.BloodGroup, &d.Rhesus, &d.Contact, &d.Address, &lastDonation)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			d.LastDonation = lastDonation.String
-			donors = append(donors, d)
-		}
-		json.NewEncoder(w).Encode(donors)
-	}
-}
-
-func getDonor(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id := chi.URLParam(r, "id")
-		var d Donor
-		var lastDonation sql.NullString
-		err := db.QueryRow("SELECT id, full_name, email, dob, gender, blood_group, rhesus, contact, address, last_donation FROM donors WHERE id = $1", id).
-			Scan(&d.Id, &d.FullName, &d.Email, &d.DOB, &d.Gender, &d.BloodGroup, &d.Rhesus, &d.Contact, &d.Address, &lastDonation)
-		if err != nil {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		d.LastDonation = lastDonation.String
-		json.NewEncoder(w).Encode(d)
-	}
-}
-
-func createDonor(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var d Donor
-		if err := json.NewDecoder(r.Body).Decode(&d); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		// Basic server-side validation
-		d.FullName = strings.TrimSpace(d.FullName)
-		d.Email = strings.TrimSpace(strings.ToLower(d.Email))
-		if d.FullName == "" || d.Email == "" || d.Password == "" {
-			http.Error(w, "Full name, email and password are required", http.StatusBadRequest)
-			return
-		}
-
-		// Hash the password before storing
-		hashed, err := bcrypt.GenerateFromPassword([]byte(d.Password), bcrypt.DefaultCost)
-		if err != nil {
-			http.Error(w, "Failed to secure password", http.StatusInternalServerError)
-			return
-		}
-
-		var dob interface{}
-		if d.DOB == "" {
-			dob = nil
-		} else {
-			dob = d.DOB
-		}
-
-		var lastDonation interface{}
-		if d.LastDonation == "" {
-			lastDonation = nil
-		} else {
-			lastDonation = d.LastDonation
-		}
-
-		err = db.QueryRow("INSERT INTO donors (full_name, email, dob, gender, blood_group, rhesus, contact, address, password, last_donation) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
-			d.FullName, d.Email, dob, d.Gender, d.BloodGroup, d.Rhesus, d.Contact, d.Address, string(hashed), lastDonation).Scan(&d.Id)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		d.Password = "" // never echo credentials back
-		json.NewEncoder(w).Encode(d)
-	}
-}
-
-func updateDonor(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id := chi.URLParam(r, "id")
-		var d Donor
-		if err := json.NewDecoder(r.Body).Decode(&d); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		var dob interface{}
-		if d.DOB == "" {
-			dob = nil
-		} else {
-			dob = d.DOB
-		}
-		var lastDonation interface{}
-		if d.LastDonation == "" {
-			lastDonation = nil
-		} else {
-			lastDonation = d.LastDonation
-		}
-
-		var err error
-		if d.Password == "" {
-			// No password change: leave the stored hash untouched
-			_, err = db.Exec("UPDATE donors SET full_name=$1, email=$2, dob=$3, gender=$4, blood_group=$5, rhesus=$6, contact=$7, address=$8, last_donation=$9 WHERE id=$10",
-				d.FullName, d.Email, dob, d.Gender, d.BloodGroup, d.Rhesus, d.Contact, d.Address, lastDonation, id)
-		} else {
-			hashed, hErr := bcrypt.GenerateFromPassword([]byte(d.Password), bcrypt.DefaultCost)
-			if hErr != nil {
-				http.Error(w, "Failed to secure password", http.StatusInternalServerError)
-				return
-			}
-			_, err = db.Exec("UPDATE donors SET full_name=$1, email=$2, dob=$3, gender=$4, blood_group=$5, rhesus=$6, contact=$7, address=$8, password=$9, last_donation=$10 WHERE id=$11",
-				d.FullName, d.Email, dob, d.Gender, d.BloodGroup, d.Rhesus, d.Contact, d.Address, string(hashed), lastDonation, id)
-		}
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Ensure the returned ID is set in the donor object
-		fmt.Sscanf(id, "%d", &d.Id)
-		d.Password = ""
-		json.NewEncoder(w).Encode(d)
-	}
-}
-
-func deleteDonor(db *sql.DB) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id := chi.URLParam(r, "id")
-		_, err := db.Exec("DELETE FROM donors WHERE id = $1", id)
-		if err != nil {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		json.NewEncoder(w).Encode("Donor Deleted")
-	}
-}
-
 // Request Handlers
+
 func getRequests(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		where, args, ok := scopeClause(r.Context(), "r.donor_id", "r.center_id")
 		if !ok {
-			_ = json.NewEncoder(w).Encode([]Request{})
+			response.Paged(w, []Request{}, 0, response.DefaultLimit, 0)
 			return
 		}
-		rows, err := db.Query(`SELECT r.id, r.donor_id, p.full_name, p.legacy_last_donation, r.created_at
-		                    FROM donation_requests r JOIN donor_profiles p ON p.user_id = r.donor_id
-		                    WHERE r.status = 'pending'`+where+` ORDER BY r.id`, args...)
+		paging, ok := response.ParsePaging(w, r)
+		if !ok {
+			return
+		}
+
+		const from = ` FROM donation_requests r JOIN donor_profiles p ON p.user_id = r.donor_id
+		               WHERE r.status = 'pending'`
+
+		var total int64
+		if err := db.QueryRow(`SELECT count(*)`+from+where, args...).Scan(&total); err != nil {
+			response.Internal(w, r, err)
+			return
+		}
+
+		// LIMIT/OFFSET close the unbounded scan (A15). The placeholders continue
+		// the numbering the scope clause started, so a scoped and an unscoped
+		// caller both get a valid statement.
+		rows, err := db.Query(`SELECT r.id, r.donor_id, p.full_name, p.legacy_last_donation, r.created_at`+from+where+
+			fmt.Sprintf(" ORDER BY r.id LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2),
+			append(args, paging.Limit, paging.Offset)...)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			response.Internal(w, r, err)
 			return
 		}
 		defer rows.Close()
+
 		requests := []Request{}
 		for rows.Next() {
 			var req Request
-			var lastDonation sql.NullString
-			var createdAt sql.NullString
+			var lastDonation, createdAt sql.NullString
 			if err := rows.Scan(&req.Id, &req.DonorId, &req.DonorName, &lastDonation, &createdAt); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				response.Internal(w, r, err)
 				return
 			}
 			req.LastDonation = lastDonation.String
 			req.CreatedAt = createdAt.String
 			requests = append(requests, req)
 		}
-		json.NewEncoder(w).Encode(requests)
+		if err := rows.Err(); err != nil {
+			response.Internal(w, r, err)
+			return
+		}
+		response.Paged(w, requests, total, paging.Limit, paging.Offset)
 	}
 }
 
@@ -326,14 +165,13 @@ func getRequest(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := chi.URLParam(r, "id")
 		var req Request
-		var lastDonation sql.NullString
-		var createdAt sql.NullString
+		var lastDonation, createdAt sql.NullString
 		var centerID sql.NullInt64
 		err := db.QueryRow(`SELECT r.id, r.donor_id, r.center_id, p.full_name, p.legacy_last_donation, r.created_at
 		                       FROM donation_requests r JOIN donor_profiles p ON p.user_id = r.donor_id
 		                       WHERE r.id = $1`, id).Scan(&req.Id, &req.DonorId, &centerID, &req.DonorName, &lastDonation, &createdAt)
 		if err != nil {
-			w.WriteHeader(http.StatusNotFound)
+			response.NotFound(w, r)
 			return
 		}
 		// 404, not 403 — a caller outside the scope must not learn the row exists.
@@ -343,15 +181,17 @@ func getRequest(db *sql.DB) http.HandlerFunc {
 		}
 		req.LastDonation = lastDonation.String
 		req.CreatedAt = createdAt.String
-		json.NewEncoder(w).Encode(req)
+		response.OK(w, req)
 	}
 }
 
 func createRequest(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req Request
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		// An empty body is legitimate here: a donor raising their own request
+		// supplies nothing, because everything is taken from their token.
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
+			response.BadRequest(w, r, "invalid JSON body")
 			return
 		}
 
@@ -368,53 +208,65 @@ func createRequest(db *sql.DB) http.HandlerFunc {
 		// succeed for a donor with no profile row and then fail the insert on the
 		// foreign key, turning a 400 into a 500.
 		var lastDonation sql.NullString
-		err := db.QueryRow("SELECT full_name, legacy_last_donation FROM donor_profiles WHERE user_id = $1", req.DonorId).Scan(&req.DonorName, &lastDonation)
-		if err != nil {
-			http.Error(w, "Donor not found", http.StatusBadRequest)
+		if err := db.QueryRow("SELECT full_name, legacy_last_donation FROM donor_profiles WHERE user_id = $1",
+			req.DonorId).Scan(&req.DonorName, &lastDonation); err != nil {
+			response.Unprocessable(w, r, "that donor does not exist",
+				response.Detail{Field: "donor_id", Issue: "no donor profile with that id"})
 			return
 		}
 		req.LastDonation = lastDonation.String
 
-		err = db.QueryRow(`INSERT INTO donation_requests (donor_id, center_id, preferred_date, status)
+		if err := db.QueryRow(`INSERT INTO donation_requests (donor_id, center_id, preferred_date, status)
 		                       VALUES ($1, (SELECT id FROM donation_centers WHERE code = 'MAIN'),
 		                               (CURRENT_DATE + 7), 'pending')
-		                       RETURNING id`, req.DonorId).Scan(&req.Id)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		                       RETURNING id`, req.DonorId).Scan(&req.Id); err != nil {
+			response.Internal(w, r, err)
 			return
 		}
-		json.NewEncoder(w).Encode(req)
+		response.Created(w, req)
 	}
 }
 
-func confirmRequest(db *sql.DB) http.HandlerFunc {
+// approveRequest schedules the appointment and marks the request approved.
+//
+// It is `approve`, not `confirm`, and it does NOT delete the request row. The
+// original code ran `DELETE FROM requests` here, which destroyed the link back
+// to "who asked and when" for every historical appointment — see the
+// quarantined rows in migration_rejects. WI-22 formalises the transition; the
+// DELETE was removed early because leaving it in would have kept destroying the
+// audit chain in the meantime.
+func approveRequest(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := chi.URLParam(r, "id")
-		type ConfirmPayload struct {
+		var payload struct {
 			Date string `json:"date"`
 		}
-		var payload ConfirmPayload
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			response.BadRequest(w, r, "invalid JSON body")
+			return
+		}
+		if payload.Date == "" {
+			response.Unprocessable(w, r, "a date is required",
+				response.Detail{Field: "date", Issue: "required"})
 			return
 		}
 
-		// Run the whole confirm flow in one transaction so a failure can't lose the request.
+		// One transaction, so a failure cannot leave an appointment without its
+		// approved request or vice versa.
 		tx, err := db.Begin()
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			response.Internal(w, r, err)
 			return
 		}
-		defer tx.Rollback() // no-op once committed
+		defer tx.Rollback() //nolint:errcheck // no-op once committed
 
-		// 1. Get request details
 		var req Request
 		var centerID sql.NullInt64
-		err = tx.QueryRow(`SELECT r.id, r.donor_id, r.center_id, p.full_name
+		if err := tx.QueryRow(`SELECT r.id, r.donor_id, r.center_id, p.full_name
 		                       FROM donation_requests r JOIN donor_profiles p ON p.user_id = r.donor_id
-		                       WHERE r.id = $1 AND r.status = 'pending'`, id).Scan(&req.Id, &req.DonorId, &centerID, &req.DonorName)
-		if err != nil {
-			w.WriteHeader(http.StatusNotFound)
+		                       WHERE r.id = $1 AND r.status = 'pending'`, id).
+			Scan(&req.Id, &req.DonorId, &centerID, &req.DonorName); err != nil {
+			response.NotFound(w, r)
 			return
 		}
 
@@ -426,33 +278,24 @@ func confirmRequest(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		// 2. Create appointment
 		var appt Appointment
-		err = tx.QueryRow(`INSERT INTO appointments (donation_request_id, donor_id, center_id, scheduled_at, status)
+		if err := tx.QueryRow(`INSERT INTO appointments (donation_request_id, donor_id, center_id, scheduled_at, status)
 		                       VALUES ($1, $2, (SELECT center_id FROM donation_requests WHERE id = $1),
 		                               ($3::date + TIME '09:00') AT TIME ZONE 'Africa/Douala', 'scheduled')
-		                       RETURNING id`, req.Id, req.DonorId, payload.Date).Scan(&appt.Id)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		                       RETURNING id`, req.Id, req.DonorId, payload.Date).Scan(&appt.Id); err != nil {
+			response.Internal(w, r, err)
 			return
 		}
 
-		// 3. Mark the request approved. It is NOT deleted.
-		//
-		// The original code ran `DELETE FROM requests` here. That is the defect
-		// that destroyed the link back to "who asked and when" for every
-		// historical appointment — see the quarantined rows in migration_rejects.
-		// WI-22 formalises this transition; it is fixed here because leaving the
-		// DELETE in place would keep destroying the audit chain in the meantime.
-		if _, err = tx.Exec(
+		if _, err := tx.Exec(
 			`UPDATE donation_requests SET status = 'approved', reviewed_at = now() WHERE id = $1`,
 			req.Id); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			response.Internal(w, r, err)
 			return
 		}
 
-		if err = tx.Commit(); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		if err := tx.Commit(); err != nil {
+			response.Internal(w, r, err)
 			return
 		}
 
@@ -460,17 +303,21 @@ func confirmRequest(db *sql.DB) http.HandlerFunc {
 		appt.DonorId = req.DonorId
 		appt.DonorName = req.DonorName
 		appt.AppointmentDate = payload.Date
-
-		json.NewEncoder(w).Encode(appt)
+		response.Created(w, appt)
 	}
 }
 
 // Appointment Handlers
+
 func getAppointments(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		where, args, ok := scopeClause(r.Context(), "a.donor_id", "a.center_id")
 		if !ok {
-			_ = json.NewEncoder(w).Encode([]Appointment{})
+			response.Paged(w, []Appointment{}, 0, response.DefaultLimit, 0)
+			return
+		}
+		paging, ok := response.ParsePaging(w, r)
+		if !ok {
 			return
 		}
 
@@ -481,7 +328,8 @@ func getAppointments(db *sql.DB) http.HandlerFunc {
 			if donorId := r.URL.Query().Get("donor_id"); donorId != "" {
 				n, convErr := strconv.ParseInt(donorId, 10, 64)
 				if convErr != nil {
-					http.Error(w, "donor_id must be an integer", http.StatusBadRequest)
+					response.BadRequest(w, r, "donor_id must be an integer",
+						response.Detail{Field: "donor_id", Issue: "not an integer"})
 					return
 				}
 				where += fmt.Sprintf(" AND a.donor_id = $%d", len(args)+1)
@@ -489,26 +337,38 @@ func getAppointments(db *sql.DB) http.HandlerFunc {
 			}
 		}
 
-		rows, err := db.Query(`SELECT a.id, COALESCE(a.donation_request_id, 0), a.donor_id, p.full_name,
-		                          (a.scheduled_at AT TIME ZONE 'Africa/Douala')::date
-		                   FROM appointments a JOIN donor_profiles p ON p.user_id = a.donor_id
-		                   WHERE true`+where+` ORDER BY a.scheduled_at DESC`, args...)
+		const from = ` FROM appointments a JOIN donor_profiles p ON p.user_id = a.donor_id WHERE true`
 
+		var total int64
+		if err := db.QueryRow(`SELECT count(*)`+from+where, args...).Scan(&total); err != nil {
+			response.Internal(w, r, err)
+			return
+		}
+
+		rows, err := db.Query(`SELECT a.id, COALESCE(a.donation_request_id, 0), a.donor_id, p.full_name,
+		                          (a.scheduled_at AT TIME ZONE 'Africa/Douala')::date`+from+where+
+			fmt.Sprintf(" ORDER BY a.scheduled_at DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2),
+			append(args, paging.Limit, paging.Offset)...)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			response.Internal(w, r, err)
 			return
 		}
 		defer rows.Close()
+
 		appointments := []Appointment{}
 		for rows.Next() {
 			var appt Appointment
 			if err := rows.Scan(&appt.Id, &appt.RequestId, &appt.DonorId, &appt.DonorName, &appt.AppointmentDate); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				response.Internal(w, r, err)
 				return
 			}
 			appointments = append(appointments, appt)
 		}
-		json.NewEncoder(w).Encode(appointments)
+		if err := rows.Err(); err != nil {
+			response.Internal(w, r, err)
+			return
+		}
+		response.Paged(w, appointments, total, paging.Limit, paging.Offset)
 	}
 }
 
@@ -530,7 +390,7 @@ func getAppointment(db *sql.DB) http.HandlerFunc {
 		                FROM appointments a JOIN donor_profiles p ON p.user_id = a.donor_id
 		                WHERE a.id = $1`, id).Scan(&appt.Id, &appt.RequestId, &appt.DonorId, &centerID, &appt.DonorName, &appt.AppointmentDate)
 		if err != nil {
-			w.WriteHeader(http.StatusNotFound)
+			response.NotFound(w, r)
 			return
 		}
 
@@ -546,32 +406,35 @@ func getAppointment(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		json.NewEncoder(w).Encode(appt)
+		response.OK(w, appt)
 	}
 }
 
 // RegisterRoutes mounts the legacy endpoints that have not yet been migrated to
-// the layered structure. `donors` is deliberately absent — it is served by
-// internal/http/handlers as the WI-11 pilot.
-func RegisterRoutes(r chi.Router, db *sql.DB) {
-	// Public: this is how a caller obtains a session in the first place.
-	r.Post(loginEndpoint, login(db))
-
-	// Everything else carries its cell of the TRD §7.6 matrix. RequirePermission
+// the layered structure, on their canonical /api/v1 paths. `donors` is
+// deliberately absent — it is served by internal/http/handlers as the WI-11
+// pilot.
+func RegisterRoutes(r chi.Router, db *sql.DB, idem middleware.IdempotencyStore) {
+	// Every route carries its cell of the TRD §7.6 matrix. RequirePermission
 	// rejects an anonymous caller with 401 before it consults the matrix, so no
 	// separate RequireAuth is needed — and a route added here without a
 	// permission would be conspicuous rather than quietly open.
 	rq := func(a domain.Action) func(http.Handler) http.Handler {
 		return middleware.RequirePermission("donation_requests", a)
 	}
+
+	// Idempotency is recorded but not yet required (WI-21 scaffolding); WI-77
+	// turns `required` on for the endpoints §6.5 marks `Idem`.
+	replay := middleware.Idempotency(idem, false)
+
 	r.With(rq(domain.Read)).Get(requestsEndpoint, getRequests(db))
-	r.With(rq(domain.Create)).Post(requestsEndpoint, createRequest(db))
+	r.With(rq(domain.Create), replay).Post(requestsEndpoint, createRequest(db))
 	r.With(rq(domain.Read)).Get(requestIDEndpoint, getRequest(db))
-	// Confirming is `X-approve`, which staff and admin hold and a donor does not,
+	// Approving is `X-approve`, which staff and admin hold and a donor does not,
 	// even on their own request (§7.6). A bare Execute check would let a donor
 	// approve themselves and delete the review step the system exists for.
-	r.With(middleware.RequireTransition("donation_requests", "approve")).
-		Post(confirmRequestEndpoint, confirmRequest(db))
+	r.With(middleware.RequireTransition("donation_requests", "approve"), replay).
+		Post(approveRequestEndpoint, approveRequest(db))
 
 	appt := middleware.RequirePermission("appointments", domain.Read)
 	r.With(appt).Get(appointmentsEndpoint, getAppointments(db))

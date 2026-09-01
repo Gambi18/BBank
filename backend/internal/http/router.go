@@ -24,16 +24,21 @@ type Deps struct {
 	Pool    *pgxpool.Pool // new layered path (pgx + sqlc)
 	LegacyD *sql.DB       // strangler: resources not yet migrated
 	Signer  *platform.Signer
+	Flags   *platform.Flags
 }
 
 // NewRouter builds the full HTTP surface.
 //
-// Two paths coexist deliberately during WI-11's strangler migration:
-//   - /api/go/donors*  -> layered (handlers -> service -> store)
-//   - everything else  -> internal/legacy, unchanged
+// **/api/v1 is the only implementation** (WI-21, TRD §6.1). The deprecated
+// /api/go/ prefix is not a second set of routes — LegacyShim rewrites those
+// paths before chi sees them, so the old spelling reaches the same handler and
+// the two cannot drift. `go` named an implementation language, which is a poor
+// thing for a public contract to promise.
 //
-// WI-21 introduces /api/v1 as canonical and demotes /api/go to a deprecated
-// alias; until then the legacy prefix stays authoritative so nothing breaks.
+// The strangler is still visible underneath: donors are served by the layered
+// handlers, donation requests and appointments still by internal/legacy. Both
+// now answer on canonical paths, so WI-22 can move them one at a time without
+// any client noticing.
 func NewRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
 	q := store.New(d.Pool)
@@ -48,6 +53,10 @@ func NewRouter(d Deps) http.Handler {
 	// Attaches identity when a valid token is present. Endpoints decide whether
 	// they require it; this only verifies and populates.
 	r.Use(middleware.Authenticate(authSvc))
+	// Rewrites /api/go/* to /api/v1/* before routing. After Authenticate, so a
+	// rewritten request is authorized identically to a canonical one — the alias
+	// changes the spelling of the path and nothing else.
+	r.Use(middleware.LegacyShim(d.Flags))
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -83,9 +92,13 @@ func NewRouter(d Deps) http.Handler {
 	})
 
 	donors := handlers.NewDonorHandler(service.NewDonorService(q))
-	r.Mount("/api/go/donors", donors.Routes())
+	r.Mount("/api/v1/donors", donors.Routes())
 
-	legacy.RegisterRoutes(r, d.LegacyD)
+	// Operational, not clinical: gated on the admin role directly rather than on
+	// the §7.6 matrix, which owns domain resources and denies unknown ones.
+	r.Mount("/api/v1/admin/flags", handlers.NewFlagHandler(d.Flags).Routes())
+
+	legacy.RegisterRoutes(r, d.LegacyD, service.NewIdempotencyService(q))
 
 	return r
 }

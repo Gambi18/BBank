@@ -1195,6 +1195,21 @@ type Hospital struct {
 	UpdatedAt    pgtype.Timestamptz
 }
 
+// TRD §6.4 replay protection. A row is inserted before the handler runs and completed after, so a concurrent retry sees an in-flight row (409) rather than executing twice.
+type IdempotencyKey struct {
+	ID       int64
+	IdemKey  string
+	ActorID  int64
+	Endpoint string
+	// SHA-256 of method+path+body. Same key + same fingerprint replays the stored response; same key + different fingerprint is 422 idempotency_key_reuse.
+	Fingerprint    []byte
+	ResponseStatus *int32
+	ResponseBody   []byte
+	CreatedAt      pgtype.Timestamptz
+	CompletedAt    pgtype.Timestamptz
+	ExpiresAt      pgtype.Timestamptz
+}
+
 type InventorySummary struct {
 	BloodGroup        BloodGroup
 	Rhesus            Rhesus

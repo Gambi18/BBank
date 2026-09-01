@@ -43,9 +43,9 @@ export async function listDonors(params?: { search?: string; limit?: number; off
     if (params?.limit !== undefined) q.set('limit', String(params.limit))
     if (params?.offset !== undefined) q.set('offset', String(params.offset))
     const qs = q.toString()
-    return apiListOrEmpty<DonorSummary>(`/api/go/donors${qs ? `?${qs}` : ''}`)
+    return apiListOrEmpty<DonorSummary>(`/api/v1/donors${qs ? `?${qs}` : ''}`)
 }
 
 export async function getDonor(id: number | string): Promise<DonorDetail> {
-    return apiGet<DonorDetail>(`/api/go/donors/${id}`)
+    return apiGet<DonorDetail>(`/api/v1/donors/${id}`)
 }

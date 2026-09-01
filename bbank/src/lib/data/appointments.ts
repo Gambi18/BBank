@@ -18,5 +18,5 @@ export interface Appointment {
  * the A14 bug.
  */
 export async function listAppointments(): Promise<Appointment[]> {
-    return (await apiListOrEmpty<Appointment>('/api/go/appointments')).items
+    return (await apiListOrEmpty<Appointment>('/api/v1/appointments')).items
 }

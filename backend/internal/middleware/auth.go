@@ -216,3 +216,32 @@ func Deny(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusNotFound)
 	_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"not found"}}`))
 }
+
+// RequireRole gates a route on the caller's role directly, without consulting
+// the §7.6 matrix.
+//
+// Reserved for OPERATIONAL endpoints — the feature-flag console, and anything
+// else that administers the process rather than the domain. The matrix owns
+// clinical and personal resources, and it denies any resource it does not know
+// (WI-20), so inventing a "flags" resource there would both redefine identifiers
+// the TRD owns and deny everyone including admin. Domain resources must keep
+// going through RequirePermission; reaching for this to skip a matrix cell would
+// be a way to quietly opt out of authorization.
+func RequireRole(roles ...domain.Role) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			id, ok := IdentityFrom(r.Context())
+			if !ok {
+				unauthorized(w)
+				return
+			}
+			for _, want := range roles {
+				if id.Role == want {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+			forbidden(w)
+		})
+	}
+}

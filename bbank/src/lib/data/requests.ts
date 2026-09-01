@@ -11,5 +11,5 @@ export interface DonationRequest {
 
 /** Pending requests visible to the caller — their own, their centre's, or all. */
 export async function listRequests(): Promise<DonationRequest[]> {
-    return (await apiListOrEmpty<DonationRequest>('/api/go/requests')).items
+    return (await apiListOrEmpty<DonationRequest>('/api/v1/donation-requests')).items
 }

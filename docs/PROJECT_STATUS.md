@@ -42,12 +42,12 @@ the legacy scope; it will be rebaselined against the new scope at the `WI-06` bo
 
 | Area                     | Status | Notes |
 |--------------------------|:------:|-------|
-| Backend API (CRUD)       |  89%   | Layered structure live (`cmd/api`, `internal/{domain,service,store,http}`); `donors` served through it with pagination + search; everything else via the shrinking `internal/legacy` shim. Approving a request is now a **status transition, not a DELETE** |
+| Backend API (CRUD)       |  92%   | Layered structure live (`cmd/api`, `internal/{domain,service,store,http}`); `donors` served through it with pagination + search; everything else via the shrinking `internal/legacy` shim. Approving a request is now a **status transition, not a DELETE**. `WI-21`: `/api/v1` is canonical and enveloped, `/api/go` is a rewriting alias with `Deprecation`/`Sunset`, list endpoints are bounded, and idempotency storage is live |
 | Frontend UI / pages      |  95%   | Design refinement pass: Outfit font, tinted shadows, grain overlay, staggered layouts, richer empty/loading states, custom 404, legal pages, OG meta, skip-to-content. **Down 2 points deliberately** (`WI-19`): signup and donor create/edit now say they are unavailable rather than posting into a 404 — the endpoints went away with `WI-11` and return with `WI-22`. Four role areas (`/staff`, `/lab`, `/inventory`, `/hospital`) are honest placeholders |
 | Auth & Security          |  93%   | **ES256 JWT + rotating refresh** (`WI-17`) now **verified on every request**, with the full TRD §7.6 permission matrix and §7.7 ownership enforced as middleware (`WI-20`). Ownership comes from the `sub`/`cid`/`hid` claims — never from a query parameter. **The frontend now verifies the same token** (`WI-19`): `proxy.ts` on the Edge runtime, server components on Node, one `jose` module for both. TODO: remove the hardcoded admin (`WI-18`) |
-| Data model / DB          |  97%   | **Schema complete.** Migrations `000000`–`000015` verified `up → down -all → up` on a fresh database: 26 tables, 21 enums, 4 views, 82 indexes, 18 triggers, 43 FKs, 14 policy rows. Remaining: `000013` drop-legacy-donors, deliberately deferred to `WI-37` |
+| Data model / DB          |  97%   | **Schema complete.** Migrations `000000`–`000016` verified `up → down -all → up` on a fresh database: 26 tables, 21 enums, 4 views, 82 indexes, 18 triggers, 43 FKs, 14 policy rows, plus `000016` `idempotency_keys` (`WI-21`). Remaining: drop-legacy-donors, deliberately deferred to `WI-37` |
 | DevOps / Docker          |  92%   | + golang-migrate, `migrate` compose service, env-injected secrets, server timeouts, graceful shutdown, structured logs, `/healthz` + `/readyz` |
-| Testing                  |  22%   | CI skeleton (gofmt, vet, build, golangci-lint, govulncheck, tsc, eslint, npm audit, gitleaks, migrate up/down/up). Unit tests for the domain (ABO, blood groups, seed cross-check, RBAC matrix + transitions) and the authorization middleware — **all 660 matrix cells asserted over HTTP, granted and denied**. Still no service, handler or E2E tests — `WI-29` |
+| Testing                  |  27%   | CI skeleton (gofmt, vet, build, golangci-lint, govulncheck, tsc, eslint, npm audit, gitleaks, migrate up/down/up). Unit tests for the domain (ABO, blood groups, seed cross-check, RBAC matrix + transitions) and the authorization middleware — **all 660 matrix cells asserted over HTTP, granted and denied**. `WI-21` adds the legacy-path rewrite table, the runtime shim toggle, pagination clamping, and idempotency replay/reuse/in-flight/5xx-release — all without a database. Still no service, handler or E2E tests — `WI-29` |
 | Documentation            |  90%   | Full planning set (8,100+ lines): PRD, TRD, User Journey, UI/UX Brief, DB Schema, Implementation Plan — all cross-referenced by FR/NFR/WI ID |
 
 ### Planning documents (added 2026-09-01)
@@ -94,6 +94,10 @@ schema doc; route paths by the user journey. Other documents cite, never redefin
 - [x] Auth endpoint (`POST /login`, bcrypt verify)
 - [x] Password hashing (bcrypt) + no password in any response
 - [x] Basic input validation (required fields, email normalization)
+- [x] Canonical `/api/v1` prefix; `/api/go` a deprecated rewriting alias (`WI-21`)
+- [x] Response envelopes everywhere — no bare arrays, no raw driver errors (`WI-21`)
+- [x] Bounded list endpoints: `?limit=&offset=`, clamped, applied limit reported (`WI-21`)
+- [x] Idempotency storage + replay middleware (`WI-21`; enforcement in `WI-77`)
 - [ ] Appointments: update / delete / cancel
 - [ ] Requests: delete / reject endpoint
 - [ ] Session/JWT issuance from the backend (currently the frontend owns the cookie)
@@ -203,20 +207,88 @@ _Resolved since this list was written:_ open CORS (now an explicit allowlist wit
 
 ## Suggested Next Steps (sequenced)
 
-1. **`WI-22` — restore the write paths.** Now the most visible gap: signup and donor create/edit
-   have had no endpoint since `WI-11` moved donors to the layered handlers with reads only. The
-   forms currently say so honestly, which is the right stopgap and a poor product.
+1. **`WI-22` — migrate the three legacy resources, and restore the write paths.** `WI-21` put
+   donation requests and appointments on canonical, enveloped, paginated endpoints, but they are
+   still served from `internal/legacy` with hand-written SQL. This moves them into
+   handlers/service/store and rebuilds `POST /donors` + `PATCH /donors/{id}`, which have had no
+   endpoint since `WI-11` — the most visible remaining gap, since signup is switched off.
 2. `WI-18` — remove the hardcoded admin; invite / suspend / role-change. Needed before anyone can
    create the `staff`, `lab_tech` and `hospital_user` accounts the six-role guard now supports.
-3. `WI-21` — `/api/v1` prefix and envelopes; the frontend's `apiClient.ts` already unwraps both
-   shapes, so the migration can proceed endpoint by endpoint without touching pages.
-4. `WI-30` — the Phase 1 safety regression suite. `WI-19`'s checks were run by hand against a live
-   stack; they should be Playwright journeys that fail in CI, not a changelog entry.
-5. Appointment/request cancel endpoints + admin donor edit/delete UI.
+3. `WI-30` — the Phase 1 safety regression suite. The `WI-19` and `WI-21` checks were run by hand
+   against a live stack; they should be Playwright journeys that fail in CI, not a changelog entry.
+4. `WI-23` — appointment/request cancel and reschedule endpoints + admin donor edit/delete UI.
+5. `WI-77` — turn idempotency from recorded to **required** on the endpoints §6.5 marks `Idem`.
+   The storage and replay path land in `WI-21`; only the `required` flag is left.
 
 ---
 
 ## Changelog
+- **2026-09-01** — **`WI-21` complete: `/api/v1` is canonical, everything is enveloped, and the
+  deprecated prefix is an alias rather than a second API.**
+  `/api/go/` no longer has handlers of its own. `middleware.LegacyShim` rewrites those paths to
+  `/api/v1` **before chi routes**, so there is exactly one implementation of each endpoint and the
+  two spellings cannot drift — the failure mode of the obvious alternative, two parallel route
+  sets, where the legacy copy is the one nobody re-reads when a rule changes. Every legacy response
+  carries `Deprecation: true`, `Sunset: Wed, 31 Mar 2027` and a `Link: rel="successor-version"`.
+  **It is deliberately not a blanket prefix swap.** Only the endpoints in TRD §6.1 are aliased;
+  anything else under `/api/go/` is a 404. A general alias would silently expose every *future* v1
+  endpoint under a deprecated name with no deprecation clock of its own, which is precisely how a
+  prefix scheduled for deletion becomes permanent.
+  **The flag is genuinely runtime, because the alternative does not work.** The acceptance
+  criterion is that the shim toggles without a redeploy, and an environment variable cannot do
+  that — changing one means a restart. So `platform.Flags` holds an `atomic.Bool`, seeded from
+  `LEGACY_API_SHIM` and owned thereafter by `PATCH /api/v1/admin/flags`. The point is the
+  experiment the shim exists to enable: turn it off, watch, turn it back on in seconds if something
+  screams. Make that a redeploy and nobody ever runs it. Switched off, the path answers **410
+  Gone**, not 404 — retired by policy, not missing by accident, and the difference tells an
+  integrator whether to fix their path or their calendar. The endpoint is gated by a new
+  `RequireRole`, not by the §7.6 matrix: a feature flag is not a clinical resource, and the matrix
+  denies resources it does not know.
+  **No endpoint returns a raw driver error any more.** The 18 `http.Error(w, err.Error(), 500)`
+  sites in `internal/legacy` are gone (`TD-15`). `response` now carries `meta{request_id,
+  server_time}` on success as well as failure, structured `details[{field, issue}]`, and helpers
+  for the codes §6.2 distinguishes — notably **409 for a domain refusal** versus 422 for a
+  validation failure, because a well-formed request the world said no to is not a client error and
+  clients branch on that.
+  **`legacy` shrank rather than grew.** The five donor handlers went: they stopped being routed
+  when `WI-11` moved donors to the layered path, so they were dead code that still leaked driver
+  errors at whoever wired them back up. `POST /api/go/login` went too — it checked a password and
+  returned a donor object *without issuing a session*, which after `WI-17` is not a login at all.
+  The shim now points that path at the real auth handler, so an old caller gets a genuine ES256
+  session. This is a **deliberate deviation from TRD §6.1**, which preserves the old response body:
+  `WI-19` already migrated the only client, so there is nobody left to keep compatible, and a
+  second password-checking code path is a liability, not a courtesy.
+  **A live pagination bug found and fixed.** `GET /donors?limit=5000` answered `page.limit: 5000`
+  while returning 100 rows: `normalise()` clamped a **copy** of the params inside the service, and
+  the handler echoed back what the caller had asked for. A client's paging loop would advance by
+  5000 and skip 4,900 records with no error to notice. Parsing and clamping now happen once, up
+  front, in `response.ParsePaging`, and the value reported is the value applied. Over-limit is
+  clamped rather than rejected (§6.3), but `limit=0` is a 400 — reading it as "no limit" is exactly
+  how an unbounded scan comes back after being closed.
+  **Idempotency storage is live** (migration `000016`, schema §14A). A row is claimed *before* the
+  handler runs via `INSERT ... ON CONFLICT DO NOTHING RETURNING` — one atomic statement, so two
+  simultaneous retries race and exactly one proceeds; a `SELECT`-then-`INSERT` would leave a window
+  where both conclude they are the original. Uniqueness is `(actor_id, idem_key)`, so one user
+  cannot burn another's key or be handed their stored response. A **5xx is not stored**: the claim
+  is released, because freezing a failure against the key for 24 hours would punish the honest
+  client for retrying correctly. `WI-21` records and replays; `WI-77` flips `required` on.
+  **The frontend moved to canonical paths in the same change**, so the app we ship does not depend
+  on a prefix we intend to delete. `/api/go/*` now has no first-party consumer at all.
+  **Verified end-to-end against the running stack:** both prefixes serve; `Deprecation`/`Sunset`
+  present on legacy and absent on canonical; the query string survives the rewrite; the flag
+  switched the shim off (410) and back on (200) in a live process with no restart, while canonical
+  paths were unaffected; a donor got 403 and an anonymous caller 401 on the flags endpoint;
+  `?limit=5000` reported the clamped 100; four error paths returned codes with no `pq:`/`pgx`/
+  `relation` text; two POSTs with one `Idempotency-Key` created **one** row and the second came
+  back `Idempotent-Replay: true`, while the same key with a different body was 422; approve
+  returned 201, left the request row present as `approved`, and created the linked appointment;
+  a donor approving was 403. Migration `000016` verified `up → down → up`. Frontend `tsc`,
+  `eslint`, `next build` and backend `go build`/`vet`/`test`/`archcheck.sh` all clean.
+  Fixtures removed afterwards.
+  **Deferred deliberately:** cursor/keyset pagination (§6.3's default). It matters for sets that
+  grow while being paged — `blood_units`, `audit_log` — and neither has an endpoint before Phase 2.
+  Offset pagination is correct for the bounded lists that exist today, and retrofitting cursors
+  onto a moving table later is a smaller job than inventing them for tables that do not exist.
 - **2026-09-01** — **`WI-19` complete: the frontend verifies the token, and the app works again.**
   `session.ts` and `proxy.ts` no longer `JSON.parse` a cookie the browser could edit by hand; both
   verify an ES256 signature through one runtime-agnostic module (`lib/jwt.ts`), which is what

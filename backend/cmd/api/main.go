@@ -92,9 +92,15 @@ func main() {
 		logger.Warn("using an EPHEMERAL JWT key — every restart invalidates all sessions; never do this in production")
 	}
 
+	// Runtime-mutable settings (WI-21). Seeded from config, then owned by
+	// PATCH /api/v1/admin/flags so the deprecated shim can be switched off and
+	// back on during an incident without waiting for a deploy.
+	flags := platform.NewFlags(cfg.LegacyShim)
+	logger.Info("legacy /api/go shim", "enabled", flags.LegacyShim())
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           bbhttp.NewRouter(bbhttp.Deps{Cfg: cfg, Pool: pool, LegacyD: legacyDB, Signer: signer}),
+		Handler:           bbhttp.NewRouter(bbhttp.Deps{Cfg: cfg, Pool: pool, LegacyD: legacyDB, Signer: signer, Flags: flags}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

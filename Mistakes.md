@@ -133,3 +133,20 @@ when the input is missing but required. (2) **Verify a revocation by reading the
 reading the response.** The API returned 204 and the UI redirected happily; only the `sessions`
 table showed that nothing had been revoked. Same family as "signed a claim that had no source
 column": the plumbing was complete and the value could never reach it.
+
+### 2026-09-01 — Reported a pagination limit that was not the one applied
+**Cause:** `GET /donors` parsed `?limit=` in the handler, passed it to the service, and echoed the
+**requested** value back in `page.limit`. The service's `normalise()` clamped to 100 — but on its
+own copy of the params, so the clamp never reached the handler. A comment above the echo even
+claimed "normalise() clamps these, so echo back what was actually used", which was true of the
+rows and false of the number.
+**Course:** `?limit=5000` returned 100 rows and announced `limit: 5000`. A client paging with the
+value the server reported would advance its offset by 5000 and skip 4,900 records, with no error
+anywhere. Found by checking the response body during WI-21 verification, not by any test.
+**Solution:** parse and clamp once, up front, in `response.ParsePaging`, and report the struct it
+returns. Handlers no longer see the raw query value at all.
+**Prevention:** when a value is validated or normalised somewhere other than where it is reported,
+those two can disagree silently. Either normalise at the boundary and pass the normalised value
+down, or return it back up — never both read the same input independently. And assert on the
+**pair**: a pagination test that checks the row count but not the reported limit would have passed
+here.

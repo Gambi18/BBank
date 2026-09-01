@@ -50,25 +50,18 @@ func resolveOwned(w http.ResponseWriter, r *http.Request, requested int64) bool 
 }
 
 func (h *DonorHandler) list(w http.ResponseWriter, r *http.Request) {
-	p := service.ListParams{}
+	// Parsed and CLAMPED here, so the limit reported back is the limit applied.
+	// This handler used to echo the requested value while the service quietly
+	// clamped a copy of it: ?limit=5000 returned 100 rows and announced 5000, so
+	// a caller's paging loop advanced by 5000 and skipped 4,900 records without
+	// any error to notice. (WI-21)
+	paging, ok := response.ParsePaging(w, r)
+	if !ok {
+		return
+	}
+	p := service.ListParams{Limit: paging.Limit, Offset: paging.Offset}
 	if s := r.URL.Query().Get("search"); s != "" {
 		p.Search = &s
-	}
-	if v := r.URL.Query().Get("limit"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			response.BadRequest(w, r, "limit must be an integer")
-			return
-		}
-		p.Limit = int32(n)
-	}
-	if v := r.URL.Query().Get("offset"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			response.BadRequest(w, r, "offset must be an integer")
-			return
-		}
-		p.Offset = int32(n)
 	}
 
 	// A donor's "own" scope makes a full listing meaningless; narrow it to self.
@@ -77,7 +70,7 @@ func (h *DonorHandler) list(w http.ResponseWriter, r *http.Request) {
 			row, err := h.svc.Get(r.Context(), id.UserID)
 			if errors.Is(err, service.ErrNotFound) {
 				// A user with no donor profile is an empty list, not a 500.
-				response.Paged(w, []dto.DonorSummary{}, 0, 1, 0)
+				response.Paged(w, []dto.DonorSummary{}, 0, paging.Limit, paging.Offset)
 				return
 			}
 			if err != nil {
@@ -89,7 +82,7 @@ func (h *DonorHandler) list(w http.ResponseWriter, r *http.Request) {
 				BloodGroup: enumPtr(row.BloodGroup), Rhesus: enumPtr(row.Rhesus),
 				ContactPhone: row.ContactPhone, TotalDonations: row.TotalDonations,
 				Status: string(row.Status),
-			}}, 1, 1, 0)
+			}}, 1, paging.Limit, paging.Offset)
 			return
 		}
 	}
@@ -113,12 +106,7 @@ func (h *DonorHandler) list(w http.ResponseWriter, r *http.Request) {
 			Status:         string(row.Status),
 		})
 	}
-	// normalise() clamps these, so echo back what was actually used.
-	limit, offset := p.Limit, p.Offset
-	if limit == 0 {
-		limit = 25
-	}
-	response.Paged(w, out, total, limit, offset)
+	response.Paged(w, out, total, paging.Limit, paging.Offset)
 }
 
 func (h *DonorHandler) get(w http.ResponseWriter, r *http.Request) {

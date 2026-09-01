@@ -19,7 +19,7 @@ export async function requestAppointment() {
     const back = `/donor/${session.userId}`
 
     try {
-        await apiPost('/api/go/requests', {})
+        await apiPost('/api/v1/donation-requests', {})
     } catch (e) {
         return redirect(flash(back, { error: describe(e, 'Failed to request an appointment') }))
     }
@@ -33,7 +33,7 @@ export async function confirmRequest(requestId: number, date: string) {
     if (!date) redirect(flash('/admin/requests', { error: 'Pick a date first' }))
 
     try {
-        await apiPost(`/api/go/requests/${requestId}/confirm`, { date })
+        await apiPost(`/api/v1/donation-requests/${requestId}/approve`, { date })
     } catch (e) {
         return redirect(flash('/admin/requests', { error: describe(e, 'Failed to confirm the request') }))
     }

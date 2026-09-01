@@ -26,6 +26,12 @@ type Config struct {
 	JWTAudience       string
 	AllowEphemeralKey bool // dev only: generate a key if none is supplied
 	CookieSecure      bool
+
+	// LegacyShim seeds the runtime flag of the same name (WI-21). It is only the
+	// STARTING value: the flag is changed at runtime through
+	// PATCH /api/v1/admin/flags, because the whole point of the shim is to be
+	// switched off experimentally and switched back on quickly.
+	LegacyShim bool
 }
 
 // Load reads and validates configuration. Missing required values are a startup
@@ -55,6 +61,10 @@ func Load() (Config, error) {
 	c.JWTAudience = envOr("JWT_AUDIENCE", "bbank-web")
 	c.AllowEphemeralKey = envOr("ALLOW_EPHEMERAL_JWT_KEY", "false") == "true"
 	c.CookieSecure = envOr("COOKIE_SECURE", "true") == "true"
+
+	// Defaults ON: turning it off is a deliberate act, and a deployment that
+	// forgets to set it keeps serving the clients it already has.
+	c.LegacyShim = envOr("LEGACY_API_SHIM", "true") == "true"
 
 	// Refusing to start beats silently signing with a key that dies on restart.
 	if c.JWTPrivateKey == "" && !c.AllowEphemeralKey {

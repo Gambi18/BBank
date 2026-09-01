@@ -13,7 +13,7 @@ export default function Signup() {
                     <p className="text-zinc-500 text-sm mt-1.5">Join the registry — it takes under a minute.</p>
 
                     {/*
-                      Signup posted to POST /api/go/donors, which went away when donors
+                      Signup posted to POST /api/v1/donors, which went away when donors
                       moved to the layered handlers (WI-11 carried only the reads over).
                       WI-22 rebuilds it as POST /api/v1/donors, writing a `users` row and
                       a `donor_profiles` row in one transaction. Until then the form says

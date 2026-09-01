@@ -1828,6 +1828,7 @@ has been live and verified.
 | 13 | `fix_donation_counter` | Correct the `donations` → `donor_profiles.total_donations` counter trigger. | Restore the previous trigger body | Yes |
 | 14 | `auth_sessions` | Create `sessions` (refresh-token families, SHA-256 hashes only); add `users.token_version`, `failed_login_count`, `locked_until`. Supports `WI-17`. | `DROP TABLE sessions`, drop the columns | Yes |
 | 15 | `user_home_center` | Add `users.center_id` + FK + the role/centre CHECK + `users_center_idx`. Gives the `cid` claim (TRD §7.3) a source column, without which every `ctr`-scoped grant in the RBAC matrix denies. Supports `WI-20`. | Drop the index, both constraints, then the column | Yes |
+| 16 | `idempotency_keys` | Create `idempotency_keys` — TRD §6.4 replay protection: `(actor_id, idem_key)` unique, SHA-256 request fingerprint, stored response status and body, 24h TTL. Supports `WI-21`; `WI-77` turns enforcement on. | `DROP TABLE idempotency_keys` | Yes |
 | — | `drop_legacy_donors` | `DROP TABLE donors`. **Separate release.** Only after the app runs entirely on `users` + `donor_profiles` in production and a verified backup exists. | Recreate `donors` and repopulate by joining `users` + `donor_profiles` — lossy for `password` if hashes were rotated | Effectively one-way |
 
 ### 11.3 `donors` → `users` + `donor_profiles`
@@ -2412,6 +2413,54 @@ indexed tables and folded into the totals.
 
 ---
 
+## 14A. `idempotency_keys` — API replay protection (WI-21)
+
+Owned by this document; consumed by TRD §6.4. Added in migration `000016`.
+
+```sql
+CREATE TABLE idempotency_keys (
+    id              BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    idem_key        TEXT        NOT NULL,
+    actor_id        BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    endpoint        TEXT        NOT NULL,   -- 'POST /api/v1/donation-requests'
+    fingerprint     BYTEA       NOT NULL,   -- SHA-256(method + path + body)
+    response_status INTEGER,                -- NULL while the request is in flight
+    response_body   BYTEA,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at    TIMESTAMPTZ,
+    expires_at      TIMESTAMPTZ NOT NULL DEFAULT now() + INTERVAL '24 hours',
+
+    CONSTRAINT idempotency_keys_actor_key_uq UNIQUE (actor_id, idem_key),
+    CONSTRAINT idempotency_keys_fingerprint_len CHECK (octet_length(fingerprint) = 32),
+    CONSTRAINT idempotency_keys_key_len CHECK (char_length(idem_key) BETWEEN 8 AND 255),
+    CONSTRAINT idempotency_keys_completed_shape CHECK (
+        (response_status IS NULL AND completed_at IS NULL)
+     OR (response_status IS NOT NULL AND completed_at IS NOT NULL)
+    )
+);
+
+CREATE INDEX idempotency_keys_expiry_idx ON idempotency_keys (expires_at);
+```
+
+Three decisions worth keeping:
+
+- **Uniqueness is `(actor_id, idem_key)`, not `idem_key` alone.** A globally unique key would let
+  one user burn another's key — either denying them a write, or handing them the stored response to
+  somebody else's request. The key is scoped to whoever presented it.
+- **A row is inserted *before* the handler runs** and completed after, via
+  `INSERT ... ON CONFLICT DO NOTHING RETURNING`. That single statement is the whole concurrency
+  story: two simultaneous retries race, exactly one inserts, and the loser reads the existing row.
+  A `SELECT`-then-`INSERT` leaves a window in which both callers conclude they are the original —
+  which is the double-submit the table exists to prevent.
+- **`response_status IS NULL` means in flight**, and is answered with `409 request_in_progress`,
+  not with a replay. `idempotency_keys_completed_shape` makes the half-written state
+  unrepresentable, so a replay can never return a status with no body.
+
+A `5xx` is deliberately **not** stored: the claim is released instead, so an honest client
+retrying with the same key genuinely retries rather than being handed the same failure for 24 hours.
+
+---
+
 ## 15. Open questions
 
 | # | Question | Owner | Blocks |
@@ -2429,4 +2478,5 @@ indexed tables and folded into the totals.
 
 | Date | Change |
 |---|---|
+| 2026-09-01 | `WI-21`: added `idempotency_keys` (§14A, migration `000016`) — TRD §6.4 replay protection. **22 tables.** |
 | 2026-09-01 | Draft v1. Initial schema: **21 tables** (plus `migration_rejects`, a migration-only artefact), **21 enum types**, **4 views**, **7 trigger functions**, **38 indexes**. Migration path from the legacy 3 tables defined and executed against a `postgres:18` fixture seeded with legacy rows, including a dangling `appointments.request_id`. All DDL, views, triggers, the FEFO allocation query and the migration verified to run clean on PostgreSQL 18. |

@@ -9,19 +9,32 @@ appointments; an admin reviews requests and confirms them into scheduled appoint
 
 - `bbank/` — **Frontend.** Next.js 16 (App Router), React 19, Tailwind 4. Uses server
   components + server actions to talk to the Go API. Path alias `@/*` → `src/*`.
-- `backend/` — **Backend.** Single-file Go API (`main.go`) using `gorilla/mux` + `lib/pq`,
-  raw SQL against PostgreSQL. Auto-creates tables on boot. Listens on `:8000`.
+- `backend/` — **Backend.** Layered Go API (`cmd/api` → `internal/{domain,service,store,http}`)
+  using `chi` + `pgx`/`sqlc`, with a shrinking `internal/legacy` shim. Migrations are applied by
+  `golang-migrate`, never at boot. Listens on `:8000`. See **Conventions** below.
 - `compose.yaml` — Docker Compose: `goapp` (8000), `db` (Postgres 18; host 5433 → container 5432),
   `frontend` (3000).
 
 ## Architecture at a glance
 
-- API routes are under `/api/go/...` (`donors`, `requests`, `appointments`).
-- Flow: signup → donor (`POST /donors`) → donor requests appointment (`POST /requests`)
-  → admin confirms (`POST /requests/{id}/confirm`) which **deletes the request and creates an
-  appointment**.
-- Route groups: `(root)` = public (landing/login/signup), `(dashboard)` = `admin/*` and
-  `donor/[id]`. There is currently **no auth guarding these** — see PROJECT_STATUS.md P0 items.
+- **API routes are under `/api/v1/...`** (`auth`, `donors`, `donation-requests`, `appointments`)
+  — canonical since `WI-21` (TRD §6.1). The old `/api/go/...` prefix still answers, but it is a
+  deprecated **alias**, not a second implementation: `middleware.LegacyShim` rewrites those paths
+  to `/api/v1` before routing, so the two cannot drift. Every legacy response carries
+  `Deprecation: true` and `Sunset: Wed, 31 Mar 2027`. Never write new code against `/api/go/`.
+  The shim can be switched off and back on at runtime via `PATCH /api/v1/admin/flags` (admin only).
+- All responses are **enveloped** (TRD §6.2): `{data, page?, meta}` on success,
+  `{error:{code, message, details[], request_id}}` on failure. No bare arrays, and **never** a raw
+  driver error — use `internal/http/response`, not `http.Error(w, err.Error(), …)`.
+- List endpoints are paginated (§6.3): `?limit=&offset=`, default 25, max 100, **clamped not
+  rejected**, and `page.limit` reports the limit actually applied. Use `response.ParsePaging`.
+- Flow: signup → donor → donor requests an appointment (`POST /donation-requests`)
+  → staff/admin approves (`POST /donation-requests/{id}/approve`), which creates the appointment
+  and sets `status='approved'`. It **does not delete the request** — the old `confirm` did, and
+  that destroyed the audit chain.
+- Route groups: `(root)` = public (landing/login/signup), `(dashboard)` = `admin/*`, `donor/[id]`,
+  and the `staff`/`lab`/`inventory`/`hospital` areas. Guarded by `src/proxy.ts`, which verifies the
+  ES256 token (`WI-19`); the API authorizes independently (`WI-20`).
 
 ## Running locally
 
@@ -29,7 +42,7 @@ appointments; an admin reviews requests and confirms them into scheduled appoint
 cp .env.example .env               # required — there are no default credentials
 docker compose up --build          # db -> migrate -> goapp -> frontend
 # or, piecemeal:
-cd backend && go run .             # DATABASE_URL is required; the process exits 1 without it
+cd backend && go run ./cmd/api     # DATABASE_URL is required; the process exits 1 without it
 cd bbank   && npm install && npm run dev
 ```
 
