@@ -39,7 +39,7 @@ legacy scope; it will be rebaselined against the new scope at the `WI-06` bounda
 | Backend API (CRUD)       |  85%   | CRUD + `POST /login`, bcrypt, validation, transactional confirm. Missing: appt/request delete endpoints |
 | Frontend UI / pages      |  97%   | Design refinement pass: Outfit font, tinted shadows, grain overlay, staggered layouts, richer empty/loading states, custom 404, legal pages, OG meta, skip-to-content |
 | Auth & Security          |  70%   | + CORS allowlist, ownership bypass closed, secret hygiene, fail-fast config. TODO: sign the cookie (P1-1), real roles (P1-3) |
-| Data model / DB          |  80%   | Migrations `000000`–`000003` applied and round-tripped against real data: 21 enums, `users` + `donor_profiles` + `migration_rejects` with backfill, facilities & reference tables. Six-role `user_role` enum exists. Remaining: `000004`–`000012` (`WI-14`–`WI-16`) |
+| Data model / DB          |  84%   | Migrations `000000`–`000005` applied and round-tripped against real data. Identity model, facilities/reference tables, `requests`→`donation_requests`, appointments upgraded to real timestamps + status. Remaining: `000006`–`000012` (`WI-15`, `WI-16`) |
 | DevOps / Docker          |  92%   | + golang-migrate, `migrate` compose service, env-injected secrets, server timeouts, graceful shutdown, structured logs, `/healthz` + `/readyz` |
 | Testing                  |  15%   | CI skeleton (gofmt, vet, build, golangci-lint, govulncheck, tsc, eslint, npm audit, gitleaks, migrate up/down/up). No unit tests yet — `WI-29` |
 | Documentation            |  90%   | Full planning set (8,100+ lines): PRD, TRD, User Journey, UI/UX Brief, DB Schema, Implementation Plan — all cross-referenced by FR/NFR/WI ID |
@@ -176,6 +176,24 @@ All four P0 findings below are fixed and covered by an acceptance check. Origina
 ---
 
 ## Changelog
+- **2026-09-01** — **`WI-14` complete** (migrations `000004`–`000005`). `requests` →
+  `donation_requests` (the old name meant the opposite of what it means in a real blood bank;
+  `blood_requests` is reserved for the hospital demand side). `appointments` gains
+  `scheduled_at TIMESTAMPTZ`, `center_id`, `status`, check-in/completion timestamps, and real FKs;
+  the bare `DATE` column is gone, so a no-show is finally representable (defect D3).
+  **Verified against real data, with `up → down → up`:** timestamps convert correctly
+  (`09:00 Africa/Douala` → `08:00Z`); rollback recovers `appointment_date` from `scheduled_at`
+  and re-derives `donor_name` by join.
+  **The hard-`DELETE` damage is now measured, not just described.** `requests` was already empty —
+  every approved request had been destroyed by `confirmRequest`. All 4 legacy appointments had a
+  dangling `donation_request_id`; the link back to "who asked and when" was never persisted and is
+  not recoverable. The quarantine ledger records all of it.
+  **Defect found and fixed beyond the spec:** schema §11.5 quarantines a dangling
+  `donation_request_id` but *not* a dangling `donor_id`. Appointment 1 belonged to the donor
+  `000002` quarantined, so the documented migration would have aborted on `appointments_donor_fk`.
+  Added an orphan guard to both `000004` and `000005` that quarantines the row with its full
+  payload before removing it — the donor still exists in legacy `donors`, so the pair stays
+  reconstructable. Result: 4 appointments → 3 migrated, 1 quarantined, 6 rows in the ledger.
 - **2026-09-01** — **Phase 1 started; `WI-13` complete** (migrations `000001`–`000003`).
   Two blocking decisions answered by the project owner and recorded: **`OD-14` deployment
   timezone = `Africa/Douala`** (WAT, UTC+1, no DST), and **`OD-18` = no TTI override, ever** —
