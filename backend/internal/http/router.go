@@ -23,6 +23,7 @@ type Deps struct {
 	Cfg     platform.Config
 	Pool    *pgxpool.Pool // new layered path (pgx + sqlc)
 	LegacyD *sql.DB       // strangler: resources not yet migrated
+	Signer  *platform.Signer
 }
 
 // NewRouter builds the full HTTP surface.
@@ -57,7 +58,27 @@ func NewRouter(d Deps) http.Handler {
 		_, _ = w.Write([]byte(`{"status":"ready"}`))
 	})
 
-	donors := handlers.NewDonorHandler(service.NewDonorService(store.New(d.Pool)))
+	q := store.New(d.Pool)
+
+	// Auth lands on the canonical /api/v1 prefix from the start — it is new, so
+	// there is no legacy client to keep compatible (WI-21 moves the rest).
+	authSvc := service.NewAuthService(q, d.Signer)
+	r.Mount("/api/v1/auth", handlers.NewAuthHandler(authSvc, d.Cfg.CookieSecure).Routes())
+
+	// The frontend needs the PUBLIC key to verify tokens in proxy.ts. Serving it
+	// here means no key material is copied between deployments by hand.
+	r.Get("/api/v1/auth/public-key", func(w http.ResponseWriter, _ *http.Request) {
+		pem, err := d.Signer.PublicKeyPEM()
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-pem-file")
+		w.Header().Set("Cache-Control", "public, max-age=300")
+		_, _ = w.Write([]byte(pem))
+	})
+
+	donors := handlers.NewDonorHandler(service.NewDonorService(q))
 	r.Mount("/api/go/donors", donors.Routes())
 
 	legacy.RegisterRoutes(r, d.LegacyD)

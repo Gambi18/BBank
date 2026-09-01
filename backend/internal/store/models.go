@@ -1281,6 +1281,24 @@ type Screening struct {
 	UpdatedAt     pgtype.Timestamptz
 }
 
+// Refresh-token families. One row per issued refresh token; rotation appends a new row in the same family and stamps rotated_at on the old one.
+type Session struct {
+	ID       int64
+	PublicID string
+	UserID   int64
+	FamilyID string
+	// SHA-256 of the opaque refresh token. The token itself is never stored.
+	TokenHash     []byte
+	IssuedAt      pgtype.Timestamptz
+	ExpiresAt     pgtype.Timestamptz
+	RotatedAt     pgtype.Timestamptz
+	RevokedAt     pgtype.Timestamptz
+	RevokedReason *string
+	Ip            *netip.Addr
+	UserAgent     *string
+	UpdatedAt     pgtype.Timestamptz
+}
+
 type StorageLocation struct {
 	ID            int64
 	CenterID      int64
@@ -1395,4 +1413,6 @@ type User struct {
 	CreatedAt        pgtype.Timestamptz
 	UpdatedAt        pgtype.Timestamptz
 	DeactivatedAt    pgtype.Timestamptz
+	// Incremented on role change, password change or forced logout. Carried in the JWT `ver` claim; a mismatch fails verification, invalidating every outstanding access token for this user immediately. This is the escape hatch from the 15-minute revocation window.
+	TokenVersion int32
 }

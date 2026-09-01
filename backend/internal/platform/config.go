@@ -18,6 +18,14 @@ type Config struct {
 	AllowedOrigins []string
 	LogLevel       slog.Level
 	ShutdownGrace  time.Duration
+
+	// Auth (WI-17). The private key signs; the frontend only ever gets the public
+	// half via GET /api/v1/auth/public-key.
+	JWTPrivateKey     string
+	JWTIssuer         string
+	JWTAudience       string
+	AllowEphemeralKey bool // dev only: generate a key if none is supplied
+	CookieSecure      bool
 }
 
 // Load reads and validates configuration. Missing required values are a startup
@@ -40,6 +48,17 @@ func Load() (Config, error) {
 				c.AllowedOrigins = append(c.AllowedOrigins, o)
 			}
 		}
+	}
+
+	c.JWTPrivateKey = os.Getenv("JWT_PRIVATE_KEY")
+	c.JWTIssuer = envOr("JWT_ISSUER", "https://api.bbank.local")
+	c.JWTAudience = envOr("JWT_AUDIENCE", "bbank-web")
+	c.AllowEphemeralKey = envOr("ALLOW_EPHEMERAL_JWT_KEY", "false") == "true"
+	c.CookieSecure = envOr("COOKIE_SECURE", "true") == "true"
+
+	// Refusing to start beats silently signing with a key that dies on restart.
+	if c.JWTPrivateKey == "" && !c.AllowEphemeralKey {
+		return c, errors.New("JWT_PRIVATE_KEY is required (or set ALLOW_EPHEMERAL_JWT_KEY=true for local development only)")
 	}
 
 	switch strings.ToLower(envOr("LOG_LEVEL", "info")) {

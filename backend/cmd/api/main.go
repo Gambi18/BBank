@@ -83,9 +83,18 @@ func main() {
 		time.Sleep(2 * time.Second)
 	}
 
+	signer, err := platform.NewSigner(cfg.JWTPrivateKey, cfg.JWTIssuer, cfg.JWTAudience, cfg.AllowEphemeralKey)
+	if err != nil {
+		logger.Error("cannot initialise JWT signer", "error", err)
+		os.Exit(1)
+	}
+	if cfg.JWTPrivateKey == "" {
+		logger.Warn("using an EPHEMERAL JWT key — every restart invalidates all sessions; never do this in production")
+	}
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           bbhttp.NewRouter(bbhttp.Deps{Cfg: cfg, Pool: pool, LegacyD: legacyDB}),
+		Handler:           bbhttp.NewRouter(bbhttp.Deps{Cfg: cfg, Pool: pool, LegacyD: legacyDB, Signer: signer}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

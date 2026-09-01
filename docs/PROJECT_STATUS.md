@@ -38,7 +38,7 @@ legacy scope; it will be rebaselined against the new scope at the `WI-06` bounda
 |--------------------------|:------:|-------|
 | Backend API (CRUD)       |  88%   | Layered structure live (`cmd/api`, `internal/{domain,service,store,http}`); `donors` served through it with pagination + search; everything else via the shrinking `internal/legacy` shim. Approving a request is now a **status transition, not a DELETE** |
 | Frontend UI / pages      |  97%   | Design refinement pass: Outfit font, tinted shadows, grain overlay, staggered layouts, richer empty/loading states, custom 404, legal pages, OG meta, skip-to-content |
-| Auth & Security          |  70%   | + CORS allowlist, ownership bypass closed, secret hygiene, fail-fast config. TODO: sign the cookie (P1-1), real roles (P1-3) |
+| Auth & Security          |  82%   | **ES256 JWT + rotating refresh with reuse detection** (`WI-17`), bcrypt cost 12, `token_version` invalidation, server-side session families. TODO: wire verification into request handling (`WI-20`), remove the hardcoded admin (`WI-18`), frontend session (`WI-19`) |
 | Data model / DB          |  97%   | **Schema complete.** Migrations `000000`–`000012` verified `up → down -all → up` on a fresh database: 26 tables, 21 enums, 4 views, 82 indexes, 18 triggers, 43 FKs, 14 policy rows. Remaining: `000013` drop-legacy-donors, deliberately deferred to `WI-37` |
 | DevOps / Docker          |  92%   | + golang-migrate, `migrate` compose service, env-injected secrets, server timeouts, graceful shutdown, structured logs, `/healthz` + `/readyz` |
 | Testing                  |  15%   | CI skeleton (gofmt, vet, build, golangci-lint, govulncheck, tsc, eslint, npm audit, gitleaks, migrate up/down/up). No unit tests yet — `WI-29` |
@@ -99,7 +99,8 @@ schema doc; route paths by the user journey. Other documents cite, never redefin
 - [x] Environment-based API base URL
 - [x] Custom 404 page
 - [x] Privacy policy and terms of service pages
-- [ ] Signed/encrypted session cookie (currently plain JSON — forgeable)
+- [x] Signed session token — ES256 JWT, backend-issued (`WI-17`)
+- [ ] Frontend verifies it (`proxy.ts` still parses the old cookie — `WI-19`)
 - [x] First automated tests (domain: ABO compatibility, blood-group parsing, seed cross-check)
 - [x] Architecture dependency rule enforced in CI (`archcheck.sh`)
 - [ ] Automated tests (service, handler, E2E)
@@ -178,6 +179,30 @@ All four P0 findings below are fixed and covered by an acceptance check. Origina
 ---
 
 ## Changelog
+- **2026-09-01** — **`WI-17` complete: ES256 JWT + rotating refresh tokens.**
+  Migration `000014` adds `sessions` (refresh-token families, SHA-256 hashed — the token itself is
+  never stored) and `users.token_version`. `POST /api/v1/auth/{login,refresh,logout}` plus
+  `GET /api/v1/auth/public-key`.
+  **ES256, not HS256, for a specific reason:** `proxy.ts` must *verify* tokens, and with HS256 the
+  verifying key is also the signing key — a frontend compromise would become an admin-token
+  factory. ES256 gives the frontend only the public half, and P-256 works in both the Node and Edge
+  runtimes that `jose` uses.
+  **Verified end-to-end against the running stack:** wrong password → 401 without revealing which
+  factor failed; correct password → `bb_at` (Lax, `/`) and `bb_rt` (Strict, `/api/v1/auth/refresh`)
+  both HttpOnly; refresh rotates to a genuinely different token; **replaying the old token revoked
+  the entire family** — both the stolen and the legitimate token — and logged
+  `security.refresh_reuse` with the user and family id; logout → 204 then 401; the public-key
+  endpoint contains no private material.
+  **8 crypto unit tests**, including tampered-token rejection, foreign-key rejection, issuer and
+  audience checks, and the **alg-confusion bypass** (`alg:none` must never verify).
+  Login spends the bcrypt cost even when the account does not exist, so timing cannot be used to
+  enumerate users.
+  Two defects caught during the work: `000014` initially attached the `set_updated_at` trigger to a
+  table with no `updated_at` column (caught by testing an UPDATE before committing), and the config
+  now refuses to start without `JWT_PRIVATE_KEY` unless `ALLOW_EPHEMERAL_JWT_KEY=true` — an
+  ephemeral key silently invalidates every session on restart.
+  **Not yet wired:** `VerifyAccessToken` (with the `token_version` check) is implemented and tested
+  but nothing calls it per-request — that is `WI-20`'s RBAC middleware.
 - **2026-09-01** — **`WI-11` + `WI-12` complete: the backend is layered.**
   `main.go` (786 lines) is gone. New structure: `cmd/api`, `cmd/migrate`,
   `internal/{domain,service,store,http/{handlers,dto,response},middleware,platform,legacy}`.
