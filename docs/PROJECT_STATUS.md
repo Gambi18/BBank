@@ -44,10 +44,10 @@ the legacy scope; it will be rebaselined against the new scope at the `WI-06` bo
 |--------------------------|:------:|-------|
 | Backend API (CRUD)       |  96%   | **`internal/legacy` is deleted — the strangler finished** (`WI-22`). Every endpoint is layered (`cmd/api`, `internal/{domain,service,store,http}`), with one pgx pool instead of two. Approving a request is now a **status transition, not a DELETE**. `WI-21`: `/api/v1` is canonical and enveloped, `/api/go` is a rewriting alias with `Deprecation`/`Sunset`, list endpoints are bounded, and idempotency storage is live |
 | Frontend UI / pages      |  97%   | Design refinement pass: Outfit font, tinted shadows, grain overlay, staggered layouts, richer empty/loading states, custom 404, legal pages, OG meta, skip-to-content. `WI-22` restored every switched-off write path — signup (with auto-login), donor profile edit, admin add-donor — and added the reject UI, whose reason list is **read from the API** rather than hardcoded. Four role areas (`/staff`, `/lab`, `/inventory`, `/hospital`) are honest placeholders |
-| Auth & Security          |  97%   | **ES256 JWT + rotating refresh** (`WI-17`) now **verified on every request**, with the full TRD §7.6 permission matrix and §7.7 ownership enforced as middleware (`WI-20`). Ownership comes from the `sub`/`cid`/`hid` claims — never from a query parameter. **The frontend now verifies the same token** (`WI-19`): `proxy.ts` on the Edge runtime, server components on Node, one `jose` module for both. **`WI-18` closes the last credential gap**: the first admin is bootstrapped from an env-supplied one-time *invitation*, never a literal, and invite / suspend / reactivate / role-change are live. A suspended account stops working on its **next request** — verified over HTTP with a live token |
+| Auth & Security          |  98%   | **ES256 JWT + rotating refresh** (`WI-17`) now **verified on every request**, with the full TRD §7.6 permission matrix and §7.7 ownership enforced as middleware (`WI-20`). Ownership comes from the `sub`/`cid`/`hid` claims — never from a query parameter. **The frontend now verifies the same token** (`WI-19`): `proxy.ts` on the Edge runtime, server components on Node, one `jose` module for both. **`WI-18` closes the last credential gap**: the first admin is bootstrapped from an env-supplied one-time *invitation*, never a literal, and invite / suspend / reactivate / role-change are live. A suspended account stops working on its **next request** — verified over HTTP with a live token |
 | Data model / DB          |  97%   | **Schema complete.** Migrations `000000`–`000016` verified `up → down -all → up` on a fresh database: 26 tables, 21 enums, 4 views, 82 indexes, 18 triggers, 43 FKs, 14 policy rows, plus `000016` `idempotency_keys` (`WI-21`). Remaining: drop-legacy-donors, deliberately deferred to `WI-37` |
 | DevOps / Docker          |  92%   | + golang-migrate, `migrate` compose service, env-injected secrets, server timeouts, graceful shutdown, structured logs, `/healthz` + `/readyz` |
-| Testing                  |  55%   | CI skeleton (gofmt, vet, build, golangci-lint, govulncheck, tsc, eslint, npm audit, gitleaks, migrate up/down/up). Unit tests for the domain (ABO, blood groups, seed cross-check, RBAC matrix + transitions) and the authorization middleware — **all 660 matrix cells asserted over HTTP, granted and denied**. `WI-21` adds the legacy-path rewrite table, the runtime shim toggle, pagination clamping, and idempotency replay/reuse/in-flight/5xx-release. `WI-22` adds the donation-request state machine and the FR-09 rejection vocabulary — including a test asserting no reason describes the *person* rather than the request. **`WI-29` adds the integration harness**: real PostgreSQL 18 via `testcontainers`, migrations applied with the same `golang-migrate` production uses, **34 tests** covering the approve/reject lifecycle, genuine concurrency (8 simultaneous approvals → exactly one appointment), refresh-token reuse revoking a family, idempotency claim/replay/release, and the legacy `requests` → `donation_requests` migration against a fixture containing the rows the old `confirm` deleted. Coverage gated in CI: **domain 99% (gate 90%), service 72% (gate 70%)**, verified non-vacuous. Still no handler-level or browser E2E tests — `WI-30` |
+| Testing                  |  68%   | CI skeleton (gofmt, vet, build, golangci-lint, govulncheck, tsc, eslint, npm audit, gitleaks, migrate up/down/up). Unit tests for the domain (ABO, blood groups, seed cross-check, RBAC matrix + transitions) and the authorization middleware — **all 660 matrix cells asserted over HTTP, granted and denied**. `WI-21` adds the legacy-path rewrite table, the runtime shim toggle, pagination clamping, and idempotency replay/reuse/in-flight/5xx-release. `WI-22` adds the donation-request state machine and the FR-09 rejection vocabulary — including a test asserting no reason describes the *person* rather than the request. **`WI-29` adds the integration harness**: real PostgreSQL 18 via `testcontainers`, migrations applied with the same `golang-migrate` production uses, **34 tests** covering the approve/reject lifecycle, genuine concurrency (8 simultaneous approvals → exactly one appointment), refresh-token reuse revoking a family, idempotency claim/replay/release, and the legacy `requests` → `donation_requests` migration against a fixture containing the rows the old `confirm` deleted. Coverage gated in CI: **domain 99% (gate 90%), service 72% (gate 70%)**, verified non-vacuous. **`WI-30` adds the HTTP-layer regression suite**: 18 tests named for the requirement or defect each guards, driving the *real* router against a real database — the `WI-02` ownership regression with no `donor_id` parameter, the §7.6 matrix as mounted, auth boundaries, `TD-15` driver-error leakage, `TD-17` pagination bounds, the shim toggle, and `A8`. It caught a live authorization leak on its first run. Backend overall 59%. Remaining: browser E2E, and `FR-19` (blocked on `WI-26`) |
 | Documentation            |  90%   | Full planning set (8,100+ lines): PRD, TRD, User Journey, UI/UX Brief, DB Schema, Implementation Plan — all cross-referenced by FR/NFR/WI ID |
 
 ### Planning documents (added 2026-09-01)
@@ -127,6 +127,7 @@ schema doc; route paths by the user journey. Other documents cite, never redefin
 - [x] Coverage gates in CI — domain ≥ 90%, service ≥ 70% (`WI-29`)
 - [x] No credential literal anywhere; first admin bootstrapped by invitation (`WI-18`)
 - [x] Invite / suspend / reactivate / change role, with a last-admin guard (`WI-18`)
+- [x] HTTP-layer regression suite, named per requirement, verified non-vacuous (`WI-30`)
 - [x] Concurrency proven, not assumed: simultaneous approvals, duplicate signups, key claims
 - [ ] Automated tests (handler, browser E2E) — `WI-30`
 - [x] CI skeleton (lint, vet, build, vuln + secret scan, migrations up/down/up)
@@ -228,6 +229,40 @@ _Resolved since this list was written:_ open CORS (now an explicit allowlist wit
 ---
 
 ## Changelog
+- **2026-09-02** — **`WI-30` (partial): the HTTP regression suite — and the authorization leak it
+  found on its first run.**
+  `WI-29` proved the rules are *implemented*. Only an HTTP test proves they are *mounted*, and that
+  is the gap three consecutive work items had been closing by hand. `WI-20`'s own changelog states
+  the risk — "a matrix that passes its unit tests can still be mounted on the wrong routes" — and
+  answered it once, manually, against a running stack. These 18 tests answer it on every CI run,
+  driving the **real router** with the real middleware chain against a real database.
+  **It immediately earned itself.** `GET /api/v1/users` returned **every account** — email, role,
+  status, last login — to any authenticated **donor**. The §7.6 matrix was correct: a donor holds
+  `R` on `users` scoped `own`, so they may read *their own* record. `UserHandler.list` (added in
+  `WI-18`, one commit earlier) checked the permission and never consulted the **scope**. Holding a
+  permission and being allowed to see every row are different questions, and it answered only the
+  first. `GET /api/v1/users/{id}` had the same hole — any donor could read any account by id.
+  Both are fixed: the list narrows to self for any scope short of `all`, written as a default-deny
+  switch so a scope added later is refused rather than silently inheriting the unfiltered list, and
+  the single read goes through `resolveOwned`, answering **404 rather than 403** because a 403
+  confirms the account exists. Verified non-vacuous: reintroducing the defect makes the guard fail
+  with a message naming what leaked.
+  **Each test is named for what it guards**, per the acceptance criterion — `TestWI02_…`,
+  `TestFR66_…`, `TestTD15_…` — so a failure says which requirement broke rather than that something
+  did. Covered: anonymous refused on all 16 guarded routes and the public ones still public; the
+  matrix as mounted; a donor refused approval of their own request; **the `WI-02` regression at the
+  level the defect lived at** — an appointment read with *no* `donor_id` parameter at all; the
+  filter that can narrow a scope but never widen one; cross-centre 404s; auth boundaries; a
+  suspended user's live token dying on its next request; no driver error in any of 12 error paths;
+  pagination clamped with the applied limit reported; the shim toggling 200 → 410 → 200; and
+  approving not deleting the request.
+  **A weak test of my own, caught and fixed.** The token-tampering check flipped the *last*
+  character of the signature — but an ES256 signature is 64 bytes in 86 base64url characters, so
+  the final character has 4 unused bits and several spellings decode identically. The test passed
+  while proving nothing. It now flips a byte in the middle and asserts the token actually changed.
+  Backend overall coverage 44% → 59%; `go test -short` still passes with no Docker.
+  **Not done:** `FR-19` deferral enforcement, which `WI-30` also calls for — it needs `WI-26`, which
+  needs `WI-25`. Browser journeys (TRD §13.5) remain manual.
 - **2026-09-02** — **`WI-18` complete: the hardcoded admin is gone, and there is a supported way to
   create every role.**
   The credential literal stopped *working* at `WI-17`, when a session became something only the API

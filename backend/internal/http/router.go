@@ -32,10 +32,8 @@ type Deps struct {
 // the two cannot drift. `go` named an implementation language, which is a poor
 // thing for a public contract to promise.
 //
-// The strangler is still visible underneath: donors are served by the layered
-// handlers, donation requests and appointments still by internal/legacy. Both
-// now answer on canonical paths, so WI-22 can move them one at a time without
-// any client noticing.
+// The strangler is finished (WI-22): internal/legacy is deleted and every
+// endpoint runs through handlers -> service -> store.
 func NewRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
 	q := store.New(d.Pool)

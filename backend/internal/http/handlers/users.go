@@ -11,6 +11,7 @@ import (
 	"bbank/internal/http/response"
 	"bbank/internal/middleware"
 	"bbank/internal/service"
+	"bbank/internal/store"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -18,9 +19,15 @@ import (
 // UserHandler serves /api/v1/users — invite, list, suspend, reactivate,
 // change role (FR-66, TRD §6.5).
 //
-// Admin only, and gated by the §7.6 matrix rather than by RequireRole: `users`
-// IS a resource in that matrix, unlike the operational feature flags. Going
-// through the matrix keeps one place to read who may administer accounts.
+// Gated by the §7.6 matrix rather than by RequireRole: `users` IS a resource in
+// that matrix, unlike the operational feature flags, so going through it keeps
+// one place to read who may administer accounts.
+//
+// Administration is admin-only, but the resource is not: a donor holds `R`
+// scoped `own`, so they may read their own account and nothing else. Every
+// read here therefore consults the granted SCOPE as well as the permission —
+// the two are different questions, and answering only the first turned this
+// into a user directory once already.
 type UserHandler struct {
 	svc  *service.UserService
 	idem middleware.IdempotencyStore
@@ -63,11 +70,53 @@ type userDTO struct {
 	InvitePending bool    `json:"invite_pending"`
 }
 
+// toUserDTO is shared by the single read and the own-scope list, so the two
+// cannot drift in what they expose.
+func toUserDTO(u store.GetUserRow) userDTO {
+	return userDTO{
+		ID: u.ID, Email: u.Email, Role: string(u.Role), Status: string(u.Status),
+		CenterID: u.CenterID, HospitalID: u.HospitalID,
+		LastLoginAt: tsPtr(u.LastLoginAt), CreatedAt: tsStr(u.CreatedAt),
+	}
+}
+
+// list is scoped, not merely permissioned.
+//
+// A donor holds `R` on `users` with scope `own` (§7.6) so they can read their
+// own account — and requiring the permission without consulting the SCOPE
+// turned that grant into a directory of every account's email, role, status and
+// last login. Holding a permission and being allowed to see every row are
+// different questions, and the second one is answered here.
 func (h *UserHandler) list(w http.ResponseWriter, r *http.Request) {
 	paging, ok := response.ParsePaging(w, r)
 	if !ok {
 		return
 	}
+
+	// Anything narrower than "all" sees only itself. Written as a default-deny
+	// switch rather than `if scope == own`, so a scope added later (hospital,
+	// centre) is refused until somebody decides what it should mean, instead of
+	// silently inheriting the unfiltered list.
+	switch middleware.ScopeFrom(r.Context()) {
+	case domain.ScopeAll:
+		// Full listing: admin.
+	case domain.ScopeOwn:
+		if id, ok := middleware.IdentityFrom(r.Context()); ok {
+			self, err := h.svc.Get(r.Context(), id.UserID)
+			if err != nil {
+				writeServiceError(w, r, err)
+				return
+			}
+			response.Paged(w, []userDTO{toUserDTO(self)}, 1, paging.Limit, paging.Offset)
+			return
+		}
+		response.Paged(w, []userDTO{}, 0, paging.Limit, paging.Offset)
+		return
+	default:
+		response.Paged(w, []userDTO{}, 0, paging.Limit, paging.Offset)
+		return
+	}
+
 	p := service.ListUserParams{Limit: paging.Limit, Offset: paging.Offset}
 	if v := r.URL.Query().Get("role"); v != "" {
 		p.Role = &v
@@ -101,16 +150,17 @@ func (h *UserHandler) get(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// §7.7: the id in the URL is not identity. An own-scoped caller asking for
+	// somebody else gets 404, not 403 — a 403 confirms the account exists.
+	if !resolveOwned(w, r, id) {
+		return
+	}
 	u, err := h.svc.Get(r.Context(), id)
 	if err != nil {
 		writeServiceError(w, r, err)
 		return
 	}
-	response.OK(w, userDTO{
-		ID: u.ID, Email: u.Email, Role: string(u.Role), Status: string(u.Status),
-		CenterID: u.CenterID, HospitalID: u.HospitalID,
-		LastLoginAt: tsPtr(u.LastLoginAt), CreatedAt: tsStr(u.CreatedAt),
-	})
+	response.OK(w, toUserDTO(u))
 }
 
 type inviteRequest struct {

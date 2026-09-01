@@ -196,3 +196,32 @@ an unknown utility class produces no error anywhere.
 hand-defined in `src/app/globals.css` — check there before using or renaming one"). Reading the
 rule is not the same as applying it: **grep `globals.css` for any `badge-`/`btn-`/`field-` variant
 before typing it**, the same discipline the enum and column rules demand.
+
+### 2026-09-02 — Checked a permission without checking the scope (authorization leak)
+**Cause:** `WI-18`'s `GET /api/v1/users` used `RequirePermission("users", Read)` and stopped there.
+The §7.6 matrix grants a donor `R` on `users` with scope **`own`** — they may read *their own*
+account — but the handler never consulted the scope, so the grant became a directory. `/users/{id}`
+had the same hole: any donor could read any account by id.
+**Course:** every authenticated donor could list every account's email, role, status and last
+login. Found by `WI-30`'s HTTP suite on its **first run**, one commit after the defect landed.
+Neither the service tests nor the 660-cell matrix tests could see it: the rule was implemented
+correctly and applied to the wrong rows.
+**Solution:** the list narrows to self for any scope short of `all` (a default-deny `switch`, so a
+scope added later is refused rather than silently inheriting the unfiltered list); the single read
+goes through `resolveOwned` and answers 404, not 403.
+**Prevention:** **a permission answers "may this role touch this resource?"; a scope answers "which
+rows?"** — every read of a scoped resource must ask both. The existing donors handler already did
+this; the new one did not, which is the real lesson: copy the *complete* pattern from the worked
+example, not just the middleware line. Structurally identical to the `WI-02` ownership defect, four
+work items later.
+
+### 2026-09-02 — Wrote a tamper test that could not fail
+**Cause:** the token-tampering check flipped the **last** character of the JWT signature. An ES256
+signature is 64 bytes encoded as 86 base64url characters — 516 bits of encoding for 512 bits of
+data — so the final character carries 4 unused bits and several spellings decode to the same
+signature. The "tampered" token was often byte-identical after decoding.
+**Course:** the test reported PASS for a token that had not meaningfully changed. It would have
+gone on passing if signature verification were removed entirely.
+**Solution:** flip a byte in the middle of the signature, and assert the string actually differs.
+**Prevention:** a negative test must be shown to fail. Before trusting one, break the thing it
+guards and watch it go red — the same rule already applied to the DSN gate and the coverage gate.
