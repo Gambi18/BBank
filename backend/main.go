@@ -1,15 +1,22 @@
 package main
 
 import (
+	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
-	"strings"
-	"time"
-
+	"net/url"
 	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
 
 	"github.com/gorilla/mux"
 	_ "github.com/lib/pq"
@@ -57,75 +64,140 @@ const (
 	appointmentIDEndpoint  = "/api/go/appointments/{id}"
 )
 
-func main() {
+// config holds every value the process reads from the environment. Nothing here
+// has a credential-bearing default: missing required config is a startup failure,
+// never a silent guess. (WI-07)
+type config struct {
+	databaseURL    string
+	port           string
+	allowedOrigins []string
+	logLevel       slog.Level
+	shutdownGrace  time.Duration
+}
 
-	// Connect to the database
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		dsn = "postgres://admin:2323@localhost:5433/bbank?sslmode=disable" // fallback for local `go run` (host port mapping)
+func loadConfig() (config, error) {
+	c := config{port: envOr("PORT", "8000"), shutdownGrace: 20 * time.Second}
+
+	// WI-07: no fallback DSN. The old hardcoded localhost default meant a
+	// misconfigured deployment silently pointed at the wrong database.
+	c.databaseURL = os.Getenv("DATABASE_URL")
+	if c.databaseURL == "" {
+		return c, errors.New("DATABASE_URL is required (see .env.example); refusing to guess a connection string")
 	}
-	db, err := sql.Open("postgres", dsn)
+
+	// WI-03: CORS is an explicit allowlist. Empty means no cross-origin browser
+	// access, which is correct for the server-to-server topology we actually use.
+	if raw := strings.TrimSpace(os.Getenv("CORS_ALLOWED_ORIGINS")); raw != "" {
+		for _, o := range strings.Split(raw, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				c.allowedOrigins = append(c.allowedOrigins, o)
+			}
+		}
+	}
+
+	switch strings.ToLower(envOr("LOG_LEVEL", "info")) {
+	case "debug":
+		c.logLevel = slog.LevelDebug
+	case "warn":
+		c.logLevel = slog.LevelWarn
+	case "error":
+		c.logLevel = slog.LevelError
+	default:
+		c.logLevel = slog.LevelInfo
+	}
+	return c, nil
+}
+
+func envOr(key, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// safeDSN renders a connection string for logs with the password removed.
+// WI-01: the previous code printed the raw DSN, password included, on every boot.
+func safeDSN(dsn string) string {
+	u, err := url.Parse(dsn)
 	if err != nil {
-		log.Fatal(err)
+		return "(unparseable DSN)"
 	}
-	fmt.Println("Connected using DSN:", dsn) // ← add this for debugging
+	if u.User != nil {
+		if _, hasPassword := u.User.Password(); hasPassword {
+			u.User = url.UserPassword(u.User.Username(), "xxxxx")
+		}
+	}
+	return u.Redacted()
+}
 
-	// Retry instead of dying: in Docker the DB may still be initializing
-	// when this container starts, and a log.Fatal here exits the container.
-	for attempt := 1; ; attempt++ {
-		err = db.Ping()
-		if err == nil {
-			fmt.Println("database connection successful")
-			break
-		}
-		if attempt >= 30 {
-			log.Fatalf("database unreachable after %d attempts: %v", attempt, err)
-		}
-		log.Printf("waiting for database (attempt %d/30): %v", attempt, err)
-		time.Sleep(2 * time.Second)
+func main() {
+	cfg, err := loadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "configuration error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// WI-10: structured JSON logging replaces log/fmt.
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.logLevel}))
+	slog.SetDefault(logger)
+
+	db, err := sql.Open("postgres", cfg.databaseURL)
+	if err != nil {
+		logger.Error("cannot open database", "error", err)
+		os.Exit(1)
 	}
 	defer db.Close()
 
-	// Create tables
-	queries := []string{
-		`CREATE TABLE IF NOT EXISTS donors (
-			id SERIAL PRIMARY KEY,
-			full_name TEXT,
-			email TEXT UNIQUE,
-			dob DATE,
-			gender TEXT,
-			blood_group TEXT,
-			rhesus TEXT,
-			contact TEXT,
-			address TEXT,
-			password TEXT,
-			last_donation DATE
-		)`,
-		`CREATE TABLE IF NOT EXISTS requests (
-			id SERIAL PRIMARY KEY,
-			donor_id INTEGER REFERENCES donors(id),
-			donor_name TEXT,
-			last_donation DATE,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-		)`,
-		`CREATE TABLE IF NOT EXISTS appointments (
-			id SERIAL PRIMARY KEY,
-			request_id INTEGER,
-			donor_id INTEGER REFERENCES donors(id),
-			donor_name TEXT,
-			appointment_date DATE
-		)`,
+	// WI-04: bound the pool. Go's default MaxOpenConns is unlimited, which lets one
+	// replica exhaust Postgres' max_connections and lock out migrations and psql
+	// alongside it. Values per TRD 11.3.
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(25)
+	db.SetConnMaxLifetime(30 * time.Minute)
+	db.SetConnMaxIdleTime(5 * time.Minute)
+
+	logger.Info("connecting to database", "dsn", safeDSN(cfg.databaseURL))
+
+	// Retry instead of dying: in Docker the DB may still be initializing when this
+	// container starts, and exiting here would take the container down with it.
+	for attempt := 1; ; attempt++ {
+		if err = db.Ping(); err == nil {
+			logger.Info("database connection successful")
+			break
+		}
+		if attempt >= 30 {
+			logger.Error("database unreachable", "attempts", attempt, "error", err)
+			os.Exit(1)
+		}
+		logger.Warn("waiting for database", "attempt", attempt, "max_attempts", 30, "error", err)
+		time.Sleep(2 * time.Second)
 	}
 
-	for _, q := range queries {
-		_, err = db.Exec(q)
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
+	// Schema is owned by golang-migrate (backend/migrations/), not by this process.
+	// WI-08 removed the CREATE TABLE IF NOT EXISTS block that used to run here.
+	// It could not detect drift (IF NOT EXISTS silently skips a changed table),
+	// carried no version, had no down path, and raced itself across replicas.
+	// The `migrate` compose service runs to completion before this container starts.
 
 	// Create router
 	router := mux.NewRouter()
+
+	// Ops endpoints (unversioned, per TRD 6). Liveness never touches the database.
+	router.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}).Methods("GET")
+	router.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := db.PingContext(ctx); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"database unreachable"}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ready"}`))
+	}).Methods("GET")
 
 	// Auth
 	router.HandleFunc(loginEndpoint, login(db)).Methods("POST")
@@ -147,25 +219,174 @@ func main() {
 	router.HandleFunc(appointmentsEndpoint, getAppointments(db)).Methods("GET")
 	router.HandleFunc(appointmentIDEndpoint, getAppointment(db)).Methods("GET")
 
-	// Wrap router with CORS and JSON content type middlewares
-	enhancedRouter := enableCORS(jsonContentTypeMiddleware(router))
+	// Middleware chain, outermost first: request ID -> access log -> CORS -> JSON.
+	handler := requestIDMiddleware(
+		loggingMiddleware(
+			enableCORS(cfg.allowedOrigins)(
+				jsonContentTypeMiddleware(router))))
 
-	// Start server
-	log.Fatal(http.ListenAndServe(":8000", enhancedRouter))
+	// WI-05: a configured server, not http.ListenAndServe. Without these timeouts a
+	// single slow client pins a goroutine and a DB connection indefinitely.
+	srv := &http.Server{
+		Addr:              ":" + cfg.port,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+
+	// WI-05: graceful shutdown. SIGTERM drains in-flight requests instead of
+	// severing them mid-transaction.
+	shutdownDone := make(chan struct{})
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+		sig := <-sigCh
+		logger.Info("shutdown signal received, draining", "signal", sig.String(), "grace", cfg.shutdownGrace.String())
+		ctx, cancel := context.WithTimeout(context.Background(), cfg.shutdownGrace)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			logger.Error("graceful shutdown failed", "error", err)
+		}
+		close(shutdownDone)
+	}()
+
+	logger.Info("server listening", "port", cfg.port, "allowed_origins", cfg.allowedOrigins)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		logger.Error("server error", "error", err)
+		os.Exit(1)
+	}
+	<-shutdownDone
+	logger.Info("shutdown complete")
 }
 
-func enableCORS(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+// ctxKey is unexported so no other package can collide with our context keys.
+type ctxKey string
 
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
+const requestIDKey ctxKey = "request_id"
+
+// requestIDMiddleware assigns every request a correlation ID, honouring an
+// inbound X-Request-Id when the caller supplies one. (WI-10)
+func requestIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimSpace(r.Header.Get("X-Request-Id"))
+		if id == "" || len(id) > 64 {
+			b := make([]byte, 16)
+			if _, err := rand.Read(b); err != nil {
+				id = strconv.FormatInt(time.Now().UnixNano(), 36)
+			} else {
+				id = hex.EncodeToString(b)
+			}
+		}
+		w.Header().Set("X-Request-Id", id)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestIDKey, id)))
+	})
+}
+
+// statusRecorder captures the status code so the access log can report it.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	n, err := s.ResponseWriter.Write(b)
+	s.bytes += n
+	return n, err
+}
+
+// loggingMiddleware emits one structured line per request. It deliberately logs
+// the matched route template rather than the raw path, so IDs and query strings
+// (which can carry personal data) never reach the log. (WI-10)
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Health probes would otherwise dominate the log.
+		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+			next.ServeHTTP(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(rec, r)
+		if rec.status == 0 {
+			rec.status = http.StatusOK
+		}
+
+		route := r.URL.Path
+		if m := mux.CurrentRoute(r); m != nil {
+			if tmpl, err := m.GetPathTemplate(); err == nil {
+				route = tmpl
+			}
+		}
+
+		id, _ := r.Context().Value(requestIDKey).(string)
+		level := slog.LevelInfo
+		if rec.status >= 500 {
+			level = slog.LevelError
+		} else if rec.status >= 400 {
+			level = slog.LevelWarn
+		}
+		slog.LogAttrs(r.Context(), level, "http request",
+			slog.String("request_id", id),
+			slog.String("method", r.Method),
+			slog.String("route", route),
+			slog.Int("status", rec.status),
+			slog.Int("bytes", rec.bytes),
+			slog.Int64("duration_ms", time.Since(start).Milliseconds()),
+		)
 	})
+}
+
+// enableCORS returns a middleware that reflects the request Origin only when it
+// appears in an explicit allowlist. (WI-03)
+//
+// The previous implementation sent "Access-Control-Allow-Origin: *", which let any
+// site on the internet call this API from a browser. Note that "*" is also illegal
+// alongside Allow-Credentials, so the old configuration could never have supported
+// the cookie auth this system is moving to.
+func enableCORS(allowed []string) func(http.Handler) http.Handler {
+	allowSet := make(map[string]struct{}, len(allowed))
+	for _, o := range allowed {
+		allowSet[o] = struct{}{}
+	}
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Mandatory: without it a shared cache can serve one origin's CORS
+			// headers to another.
+			w.Header().Add("Vary", "Origin")
+
+			origin := r.Header.Get("Origin")
+			_, ok := allowSet[origin]
+			if origin != "" && ok {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key, X-Request-Id")
+				w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id, Deprecation, Sunset, Retry-After, Idempotent-Replay")
+				w.Header().Set("Access-Control-Max-Age", "600")
+			}
+
+			if r.Method == http.MethodOptions {
+				// A preflight from a disallowed origin gets no CORS headers, so the
+				// browser blocks the real request regardless of this status.
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func jsonContentTypeMiddleware(next http.Handler) http.Handler {
@@ -522,6 +743,27 @@ func getAppointment(db *sql.DB) http.HandlerFunc {
 		id := mux.Vars(r)["id"]
 		donorId := r.URL.Query().Get("donor_id")
 
+		// WI-02 — authorization bypass fix.
+		//
+		// This check used to run only `if donorId != ""`, i.e. only when the caller
+		// volunteered the parameter. Omitting `?donor_id=` skipped it entirely and
+		// returned any donor's appointment. The guard was opt-in by the attacker.
+		//
+		// Ownership is now unconditional. Until the backend issues and verifies its
+		// own session (WI-17/WI-20), donor_id still arrives as a parameter, so this
+		// is a *bypass* fix rather than full authorization: a caller may still assert
+		// an identity. Deriving the donor from a verified session is Phase 1 work and
+		// must not be assumed done here.
+		if donorId == "" {
+			http.Error(w, "donor_id is required", http.StatusBadRequest)
+			return
+		}
+		dId, convErr := strconv.Atoi(donorId)
+		if convErr != nil {
+			http.Error(w, "donor_id must be an integer", http.StatusBadRequest)
+			return
+		}
+
 		var appt Appointment
 		err := db.QueryRow("SELECT id, request_id, donor_id, donor_name, appointment_date FROM appointments WHERE id = $1", id).Scan(&appt.Id, &appt.RequestId, &appt.DonorId, &appt.DonorName, &appt.AppointmentDate)
 		if err != nil {
@@ -529,13 +771,14 @@ func getAppointment(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		if donorId != "" {
-			var dId int
-			fmt.Sscanf(donorId, "%d", &dId)
-			if appt.DonorId != dId {
-				http.Error(w, "Access denied", http.StatusForbidden)
-				return
-			}
+		// 404, not 403: a non-owner must not learn that this appointment exists.
+		if appt.DonorId != dId {
+			slog.WarnContext(r.Context(), "appointment ownership check failed",
+				slog.String("appointment_id", id),
+				slog.Int("claimed_donor_id", dId),
+			)
+			w.WriteHeader(http.StatusNotFound)
+			return
 		}
 
 		json.NewEncoder(w).Encode(appt)

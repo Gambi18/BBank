@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# Cheap gates only. Test and coverage gates arrive with WI-29 (Phase 1).
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (Go)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: backend
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  frontend:
+    name: Frontend (Next.js)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bbank
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: bbank/package-lock.json
+
+      - run: npm ci
+      - name: TypeScript
+        run: npx tsc --noEmit
+      - name: ESLint
+        run: npm run lint
+      - name: npm audit (high and above)
+        run: npm audit --audit-level=high
+
+  migrations:
+    name: Migrations up / down / up
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci -d ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install golang-migrate
+        run: |
+          curl -sSL https://github.com/golang-migrate/migrate/releases/download/v4.17.1/migrate.linux-amd64.tar.gz \
+            | tar xvz -C /tmp migrate
+          sudo mv /tmp/migrate /usr/local/bin/
+      # A migration that cannot be rolled back is not a migration (WI-08).
+      - name: up -> down -> up
+        env:
+          DB: postgres://ci:ci@localhost:5432/ci?sslmode=disable
+        run: |
+          migrate -path backend/migrations -database "$DB" up
+          migrate -path backend/migrations -database "$DB" down -all
+          migrate -path backend/migrations -database "$DB" up
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  no-credentials-in-logs:
+    name: No credential logged at boot (WI-01)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Asserts the specific regression WI-01 fixed: the DSN, password included,
+      # was printed to stdout on every boot.
+      - name: Assert no raw DSN is printed
+        run: |
+          # Flag any print/log call that passes a DSN-bearing identifier without
+          # routing it through safeDSN(). safeDSN's own definition is exempt.
+          if grep -rnE '(fmt\.(Print|Printf|Println|Fprint[a-z]*)|log\.[A-Z][a-z]+|logger\.(Info|Warn|Error|Debug)|slog\.[A-Z][a-z]+)\(.*(dsn|databaseURL|DATABASE_URL)' backend/*.go \
+             | grep -v 'safeDSN(' ; then
+            echo "::error::A raw DSN appears to be logged. Route it through safeDSN()."; exit 1
+          fi
+          echo "OK: no raw DSN logging found"

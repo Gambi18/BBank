@@ -1,4 +1,22 @@
-.env 
+# Secrets — never commit. `.env.example` is the tracked template.
+.env
+.env.*
+!.env.example
+
+# Local agent/editor state
 .claude
-CLAUDE.md
-docs
+
+# Note: `CLAUDE.md` and `docs/` were previously ignored (WI-06). They are the project's
+# instructions and its single source of truth for progress — both are now tracked.
+
+# Build output — the compiled Go binary embeds the DSN string literal.
+backend/bbank
+/backend/backend
+*.exe
+
+# Logs — backend.log was committed containing a plaintext DSN (WI-01/WI-07).
+*.log
+
+# Editor config: the committed settings.json held five database passwords,
+# including a postgres superuser credential for an unrelated project.
+.vscode/

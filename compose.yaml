@@ -1,4 +1,44 @@
+# Values come from `.env` in this directory (see .env.example). The `:?` syntax makes
+# compose fail with a named error rather than starting with a default credential (WI-07).
+
 services:
+  db:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required — copy .env.example to .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copy .env.example to .env}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required — copy .env.example to .env}
+    ports:
+      # Host port is configurable: 5433 collides with other local Postgres
+      # containers on some machines. Container-internal port is always 5432,
+      # which is what DATABASE_URL uses over the compose network.
+      - "${DB_HOST_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      # -d is required: without it pg_isready defaults dbname to the username and
+      # Postgres logs FATAL: database "admin" does not exist every interval.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # WI-08: schema is applied here, once, before the API starts. The API no longer
+  # executes DDL. Runs to completion and exits; `goapp` waits on that exit code.
+  migrate:
+    image: migrate/migrate:v4.17.1
+    restart: "no"
+    volumes:
+      - ./backend/migrations:/migrations:ro
+    command:
+      - "-path=/migrations"
+      - "-database=${DATABASE_URL:?DATABASE_URL is required — copy .env.example to .env}"
+      - "up"
+    depends_on:
+      db:
+        condition: service_healthy
+
   goapp:
     container_name: goapp
     image: goapp:1.0.0
@@ -7,30 +47,18 @@ services:
       dockerfile: go.dockerfile
     restart: unless-stopped
     environment:
-      DATABASE_URL: 'postgres://admin:2323@db:5432/bbank?sslmode=disable'
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required — copy .env.example to .env}
+      PORT: "8000"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # WI-03: exact origins only. Never "*".
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
     ports:
       - "8000:8000"
     depends_on:
       db:
         condition: service_healthy
-  db:
-    image: postgres:18  # or :18-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: 2323
-      POSTGRES_DB: bbank
-    ports:
-      - "5433:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql   # ← Changed: mount parent dir
-    healthcheck:
-      # -d bbank: without it pg_isready defaults dbname to the username ("admin")
-      # and Postgres logs FATAL: database "admin" does not exist every interval
-      test: ["CMD-SHELL", "pg_isready -U admin -d bbank"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+      migrate:
+        condition: service_completed_successfully
 
   frontend:
     container_name: bbank
@@ -40,8 +68,8 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      # Server components/actions call the Go API over the compose network (not localhost)
-      API_BASE_URL: 'http://goapp:8000'
+      # Server components/actions call the Go API over the compose network, not localhost.
+      API_BASE_URL: ${API_BASE_URL:-http://goapp:8000}
     ports:
       - "3000:3000"
     depends_on:
