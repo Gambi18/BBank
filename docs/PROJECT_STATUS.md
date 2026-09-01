@@ -39,7 +39,7 @@ legacy scope; it will be rebaselined against the new scope at the `WI-06` bounda
 | Backend API (CRUD)       |  85%   | CRUD + `POST /login`, bcrypt, validation, transactional confirm. Missing: appt/request delete endpoints |
 | Frontend UI / pages      |  97%   | Design refinement pass: Outfit font, tinted shadows, grain overlay, staggered layouts, richer empty/loading states, custom 404, legal pages, OG meta, skip-to-content |
 | Auth & Security          |  70%   | + CORS allowlist, ownership bypass closed, secret hygiene, fail-fast config. TODO: sign the cookie (P1-1), real roles (P1-3) |
-| Data model / DB          |  84%   | Migrations `000000`–`000005` applied and round-tripped against real data. Identity model, facilities/reference tables, `requests`→`donation_requests`, appointments upgraded to real timestamps + status. Remaining: `000006`–`000012` (`WI-15`, `WI-16`) |
+| Data model / DB          |  90%   | Migrations `000000`–`000009` applied and round-tripped. **All 21 target tables exist** (26 with audit partitions, `migration_rejects` and legacy `donors`): 21 enums, 43 FKs, 265 CHECKs, `audit_log` partitioned by month. Remaining: `000010`–`000012` — views, triggers, indexes, seed (`WI-16`) |
 | DevOps / Docker          |  92%   | + golang-migrate, `migrate` compose service, env-injected secrets, server timeouts, graceful shutdown, structured logs, `/healthz` + `/readyz` |
 | Testing                  |  15%   | CI skeleton (gofmt, vet, build, golangci-lint, govulncheck, tsc, eslint, npm audit, gitleaks, migrate up/down/up). No unit tests yet — `WI-29` |
 | Documentation            |  90%   | Full planning set (8,100+ lines): PRD, TRD, User Journey, UI/UX Brief, DB Schema, Implementation Plan — all cross-referenced by FR/NFR/WI ID |
@@ -176,6 +176,19 @@ All four P0 findings below are fixed and covered by an acceptance check. Origina
 ---
 
 ## Changelog
+- **2026-09-01** — **`WI-15` complete** (migrations `000006`–`000009`, all purely additive).
+  `000006` screening/deferrals/**donations** — the row that was entirely missing, and the reason
+  `donors.last_donation` was donor-entered free text and the 56-day interval could not be enforced.
+  `000007` `blood_units` + the append-only `unit_status_events` ledger + `test_results`.
+  `000008` the demand side that did not exist at all — `blood_requests`, `issuances`,
+  `unit_allocations` — plus the `unit_status_events.blood_request_id` FK that `000007` deliberately
+  deferred. `000009` month-partitioned `audit_log` + `notifications`.
+  **All 21 target tables now exist**: 26 base tables counting the two audit partitions,
+  `migration_rejects` and legacy `donors`; 21 enums, 43 FKs, 265 CHECK constraints.
+  Verified `up → down → up` (26 → 13 → 26 tables, version 9, not dirty) with the `WI-14` data
+  surviving intact. Audit-log partition routing tested functionally: a September timestamp lands in
+  `audit_log_2026m09` and an out-of-range 2027 timestamp falls through to `audit_log_default`
+  rather than failing the insert.
 - **2026-09-01** — **`WI-14` complete** (migrations `000004`–`000005`). `requests` →
   `donation_requests` (the old name meant the opposite of what it means in a real blood bank;
   `blood_requests` is reserved for the hospital demand side). `appointments` gains
