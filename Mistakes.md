@@ -83,3 +83,16 @@ stale database and looked like they passed.
 **Solution:** use a shell function, not a variable, for a reusable command.
 **Prevention:** a step that appears to succeed without producing its expected output has not run.
 Check the step's own output, not just the assertion after it.
+
+### 2026-09-01 — Migrated the schema without re-testing the API against it
+**Cause:** WI-14 renamed `requests` to `donation_requests` and dropped `appointments.donor_name`
+and `appointment_date`. I verified the *migration* thoroughly (row counts, round trip, timezone)
+but never called the endpoints that read those tables.
+**Course:** `GET /api/go/requests` and `/api/go/appointments` returned 500 with
+`relation "requests" does not exist`. The break shipped in WI-14 and was only noticed during
+WI-11, two commits later.
+**Solution:** updated the legacy shim to the new schema, and replaced its hard `DELETE` with the
+status transition while there.
+**Prevention:** a schema migration is not verified by testing the migration. It is verified by
+exercising the code that reads the changed tables. Add an endpoint smoke test to the definition of
+done for any migration that renames or drops a column.

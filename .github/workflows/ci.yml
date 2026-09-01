@@ -47,6 +47,26 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
+      # The layered structure stops being layered within a month if nothing
+      # enforces it. Verified non-vacuous: adding a domain -> store import fails.
+      - name: architecture (dependency rule, TRD 4.2)
+        run: ./archcheck.sh
+
+      - name: unit tests
+        run: go test ./... -race
+
+      # sqlc output is generated, so a stale checkout means the code and the
+      # queries have silently diverged.
+      - name: sqlc generate is up to date
+        run: |
+          curl -sSL https://downloads.sqlc.dev/sqlc_1.31.1_linux_amd64.tar.gz | tar xz -C /tmp
+          /tmp/sqlc generate
+          if ! git diff --quiet -- internal/store; then
+            echo "::error::internal/store is stale — run 'sqlc generate' and commit"
+            git diff --stat -- internal/store
+            exit 1
+          fi
+
   frontend:
     name: Frontend (Next.js)
     runs-on: ubuntu-latest

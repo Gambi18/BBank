@@ -43,22 +43,44 @@ migrate -path backend/migrations -database "$DATABASE_URL" up      # and `down 1
 
 If host port 5433 is taken by another project's Postgres, set `DB_HOST_PORT` in `.env`.
 
-Backend reads `DATABASE_URL` (falls back to a localhost DSN). The frontend resolves the API base
+Backend requires `DATABASE_URL` — there is no fallback; the process exits 1 without it (WI-07).
+The frontend resolves the API base
 through `src/lib/api.ts` (`API_BASE_URL`, set to `http://goapp:8000` in compose) — never hardcode
 `http://localhost:8000` in a fetch call; that breaks inside Docker.
 
 ## Conventions
 
-- **Backend layout — transitional.** Today the backend is one file (`main.go`), with handlers as
-  `func(db *sql.DB) http.HandlerFunc`. **Keep matching that style for changes to the existing code.**
-  This convention was correct at 3 tables and does not survive the documented 21-table scope:
-  `docs/TRD.md` §4.4 formally supersedes it with a layered package structure (`cmd/`,
-  `internal/domain/`, `internal/http/handlers/`, `internal/store/`, `internal/service/`,
-  `internal/middleware/`, `migrations/`), adopted by strangler in Phase 1 (`WI-22`). Until that
-  lands, do not start new packages ad hoc — follow the plan or the existing file, not a third thing.
-- **Schema changes go through migrations, not `CREATE TABLE IF NOT EXISTS` on boot.** The current
-  auto-create block in `main.go` is being replaced (`WI-08`); do not add tables to it.
-- Frontend mutations use **server actions** (`'use server'`) that fetch the Go API, then
+- **Backend is layered** (`TRD.md` §4.2, superseding the former single-file rule — see below):
+
+  ```
+  backend/
+    cmd/api/          entrypoint: wire config -> pools -> services -> handlers
+    cmd/migrate/      schema version check (migrations are applied by golang-migrate)
+    internal/domain/  pure business logic — imports NOTHING from this project
+    internal/service/ use cases, transaction boundaries; may import domain + store
+    internal/store/   sqlc-generated queries (pgx). Never hand-edit; run `sqlc generate`
+    internal/http/    router, handlers/, dto/, response/ — imports service
+    internal/middleware/, internal/platform/
+    internal/legacy/  the old single-file handlers, shrinking. Do not add to it
+    migrations/       golang-migrate SQL, applied by the `migrate` compose service
+    queries/          .sql input for sqlc
+  ```
+
+  **The dependency rule is enforced**: run `backend/archcheck.sh` (also a CI job).
+  `domain` imports nothing from the project; nothing but `cmd/` imports `http`.
+  Adding a `domain -> store` import fails the build in CI — verified, not assumed.
+
+  *Why this replaced "the backend is intentionally one file":* that rule was correct at
+  3 tables and 543 lines. At 21 tables it left business rules with nowhere to live, made
+  `rows.Scan` positional over hundreds of columns, and had no seam for testing. The change
+  is deliberate and is recorded in `TRD.md` §4.4.
+
+- **Migrating a resource out of `internal/legacy`** (the strangler): add its queries to
+  `queries/<resource>.sql`, run `sqlc generate`, add a service, add a handler, mount it in
+  `internal/http/router.go`, then delete the legacy handler and its route. `donors` is the
+  worked example — follow it.
+- **Never hand-edit `internal/store/`.** It is generated. CI fails if it is stale.
+- - Frontend mutations use **server actions** (`'use server'`) that fetch the Go API, then
   `redirect(...?success=...|error=...)`; `components/ToastAlert.tsx` renders those query params.
 - Match existing Tailwind-in-JSX style. Custom utility classes (`.card`, `.btn`, `.field`, `.badge`,
   `.blob`, `.blur-panel`, …) are hand-defined in `src/app/globals.css` — check there before using or

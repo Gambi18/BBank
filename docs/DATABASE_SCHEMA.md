@@ -1769,7 +1769,8 @@ backend/migrations/
   000010_views_and_triggers.up.sql          000010_views_and_triggers.down.sql
   000011_indexes.up.sql                     000011_indexes.down.sql
   000012_seed_reference_data.up.sql         000012_seed_reference_data.down.sql
-  000013_drop_legacy_donors.up.sql          000013_drop_legacy_donors.down.sql
+  000013_fix_donation_counter.up.sql        000013_fix_donation_counter.down.sql
+  000014_drop_legacy_donors.up.sql          000014_drop_legacy_donors.down.sql
 ```
 
 Run: `migrate -path backend/migrations -database "$DATABASE_URL" up`.

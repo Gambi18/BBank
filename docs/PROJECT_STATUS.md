@@ -36,7 +36,7 @@ legacy scope; it will be rebaselined against the new scope at the `WI-06` bounda
 
 | Area                     | Status | Notes |
 |--------------------------|:------:|-------|
-| Backend API (CRUD)       |  85%   | CRUD + `POST /login`, bcrypt, validation, transactional confirm. Missing: appt/request delete endpoints |
+| Backend API (CRUD)       |  88%   | Layered structure live (`cmd/api`, `internal/{domain,service,store,http}`); `donors` served through it with pagination + search; everything else via the shrinking `internal/legacy` shim. Approving a request is now a **status transition, not a DELETE** |
 | Frontend UI / pages      |  97%   | Design refinement pass: Outfit font, tinted shadows, grain overlay, staggered layouts, richer empty/loading states, custom 404, legal pages, OG meta, skip-to-content |
 | Auth & Security          |  70%   | + CORS allowlist, ownership bypass closed, secret hygiene, fail-fast config. TODO: sign the cookie (P1-1), real roles (P1-3) |
 | Data model / DB          |  97%   | **Schema complete.** Migrations `000000`–`000012` verified `up → down -all → up` on a fresh database: 26 tables, 21 enums, 4 views, 82 indexes, 18 triggers, 43 FKs, 14 policy rows. Remaining: `000013` drop-legacy-donors, deliberately deferred to `WI-37` |
@@ -100,7 +100,9 @@ schema doc; route paths by the user journey. Other documents cite, never redefin
 - [x] Custom 404 page
 - [x] Privacy policy and terms of service pages
 - [ ] Signed/encrypted session cookie (currently plain JSON — forgeable)
-- [ ] Automated tests (backend + frontend)
+- [x] First automated tests (domain: ABO compatibility, blood-group parsing, seed cross-check)
+- [x] Architecture dependency rule enforced in CI (`archcheck.sh`)
+- [ ] Automated tests (service, handler, E2E)
 - [x] CI skeleton (lint, vet, build, vuln + secret scan, migrations up/down/up)
 - [x] Database migrations (`golang-migrate`; boot-time DDL removed)
 - [x] CORS locked to an allowlist
@@ -176,6 +178,30 @@ All four P0 findings below are fixed and covered by an acceptance check. Origina
 ---
 
 ## Changelog
+- **2026-09-01** — **`WI-11` + `WI-12` complete: the backend is layered.**
+  `main.go` (786 lines) is gone. New structure: `cmd/api`, `cmd/migrate`,
+  `internal/{domain,service,store,http/{handlers,dto,response},middleware,platform,legacy}`.
+  Adopted **chi**, **pgx/v5** + **sqlc** (retiring `lib/pq` for new code), and moved `donors` to
+  the layered path as the strangler pilot — with pagination and search, closing the unbounded
+  list scan (`TD-17`). Everything else still serves from `internal/legacy`, unchanged, so nothing
+  broke mid-refactor. `CLAUDE.md` rewritten (`WI-12`): the single-file convention is formally
+  replaced, with the rationale recorded.
+  **First domain tests**: ABO compatibility (directionality, universal donor/recipient, no
+  Rh-positive unit to an Rh-negative recipient) and legacy free-text blood-group parsing. Plus a
+  test that parses `000012_seed_reference_data.up.sql` and asserts the Go matrix and the SQL seed
+  agree on all 27 pairs — divergence there is a patient-safety failure, not a build failure.
+  **Dependency rule enforced** by `backend/archcheck.sh` in CI, verified non-vacuous by adding a
+  `domain → store` import and watching it fail.
+  **Two defects found and fixed:**
+  (1) `donations_sync_counter` fired `AFTER INSERT` only, so `total_donations` incremented but
+  never decremented — observed drifting to 1 against 0 real donations. Migration `000013` handles
+  INSERT/UPDATE/DELETE and reconciles existing drift. (`drop_legacy_donors` moves to `000014`.)
+  (2) **`WI-14` had silently broken the legacy API** — it renamed `requests` and dropped
+  `appointments.donor_name`/`appointment_date`, and the handlers still queried the old shape;
+  both endpoints were returning 500. Fixed the shim, and **replaced its hard `DELETE` with the
+  `status='approved'` transition** rather than let it keep destroying the audit chain until
+  `WI-22`. Verified end-to-end: approving a request now leaves the row present, reviewed, and
+  linked from the appointment.
 - **2026-09-01** — **`WI-16` complete; the database schema is finished** (migrations `000010`–`000012`).
   7 trigger functions + 11 triggers, 4 views, 38 indexes, and the reference seed.
   **The clinical constants are now data, not code**: 14 `policies` rows carry the 56-day interval,

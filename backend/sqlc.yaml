@@ -1,0 +1,21 @@
+version: "2"
+sql:
+  - engine: postgresql
+    schema: "migrations"
+    queries: "queries"
+    gen:
+      go:
+        package: "store"
+        out: "internal/store"
+        sql_package: "pgx/v5"
+        emit_json_tags: false
+        emit_pointers_for_null_types: true
+        emit_empty_slices: true
+        # Generated names should read like the domain, not like the driver.
+        rename:
+          abo: "ABO"
+          dob: "DOB"
+          tti: "TTI"
+        overrides:
+          - db_type: "citext"
+            go_type: "string"
