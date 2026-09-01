@@ -111,3 +111,25 @@ refresh both populate the claim from it.
 value flows. Trace it back to where the value is *born* — a column, an env var, a request — and
 assert a non-null one end to end. The unit tests passed precisely because they supplied the value
 themselves. Same shape as the "verified the migration, not the code that reads it" entry above.
+
+### 2026-09-01 — Logout that could never have worked, and said it did
+**Cause:** `WI-19` wrote logout as a server action that reads the refresh cookie and asks the API to
+revoke the family. A server action posts to the **page's own URL**, and `bb_rt` is set with
+`Path=/api/v1/auth/refresh` — so the cookie is never sent there. The action read `undefined`, and
+the revocation was wrapped in `if (refresh)`, so it was skipped silently.
+**Course:** the user saw "You have been signed out" and the cookies were deleted, while the refresh
+family stayed valid server-side for its full 7 days — a stolen refresh token outlived the logout.
+The code's own comment stated the property it was failing to provide ("deleting the cookie alone
+would leave a working refresh-token family behind"). It looked right in review because the intent
+was written down next to it. Caught only by checking `sessions.revoked_at` in the database after
+clicking the button.
+**Solution:** sign-out is a route handler at `/api/v1/auth/refresh/logout` — nested *inside* the
+cookie's path, because a cookie path matches that path and everything below it, so the sibling
+`/api/v1/auth/logout` would not receive it either. `clearSession()` was deleted rather than left
+around as a helper that does only the half that doesn't matter.
+**Prevention:** two rules. (1) `if (token)` around a security operation hides the case where the
+token cannot arrive — the same shape as the opt-out ownership check above; prefer failing loudly
+when the input is missing but required. (2) **Verify a revocation by reading the store, not by
+reading the response.** The API returned 204 and the UI redirected happily; only the `sessions`
+table showed that nothing had been revoked. Same family as "signed a claim that had no source
+column": the plumbing was complete and the value could never reach it.

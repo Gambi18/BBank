@@ -20,3 +20,10 @@ backend/bbank
 # Editor config: the committed settings.json held five database passwords,
 # including a postgres superuser credential for an unrelated project.
 .vscode/
+
+# Browser-automation artifacts (Playwright MCP page/console dumps). Written into
+# the repo root by the MCP server during verification runs; never source.
+.playwright-mcp/
+
+# Scratch file from a one-off check.
+.tmpcheck

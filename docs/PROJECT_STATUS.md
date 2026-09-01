@@ -110,7 +110,9 @@ schema doc; route paths by the user journey. Other documents cite, never redefin
 - [x] RBAC: the TRD §7.6 matrix enforced as middleware, deny by default (`WI-20`)
 - [x] Ownership derived from the token, not from `?donor_id=` (§7.7, closes A14 properly) (`WI-20`)
 - [x] `users.center_id` → the `cid` claim, so `ctr`-scoped grants actually resolve (`WI-20`)
-- [ ] Frontend verifies it (`proxy.ts` still parses the old cookie — `WI-19`)
+- [x] Frontend verifies it — `jose` ES256 in `proxy.ts` and `session.ts` (`WI-19`)
+- [x] Sign-out revokes the refresh family server-side, not just the cookie (`WI-19`)
+- [x] Silent access-token refresh with rotation, and a loop guard (`WI-19`)
 - [x] First automated tests (domain: ABO compatibility, blood-group parsing, seed cross-check)
 - [x] Architecture dependency rule enforced in CI (`archcheck.sh`)
 - [ ] Automated tests (service, handler, E2E)
@@ -166,15 +168,27 @@ All four P0 findings below are fixed and covered by an acceptance check. Origina
     the designated single source of truth for progress, and the entire planning set, are untracked
     and invisible to anyone cloning the repo. _Decision required._ (`WI-06`)
 
+### ✅ Resolved 2026-09-01 (`WI-19` — frontend session migration)
+
+- ~~**The *frontend* session cookie is still plain JSON** (`bb_session` = `{role,id}`), forgeable.~~
+  → `session.ts` and `proxy.ts` now verify an ES256 signature against `/api/v1/auth/public-key`.
+  Flipping one byte of the cookie, forging `role: admin` into the payload, and an `alg: none`
+  token were each verified to end at the login page. The `/api/go/*` 401 window is closed.
+- ~~**Logout deleted the cookie but left the refresh family live.**~~ → Found while verifying
+  `WI-19`, fixed in the same change. Logout was a server action, and a server action posts to the
+  page's own URL — where the `Path=/api/v1/auth/refresh` cookie is never sent. The revocation call
+  was therefore skipped for want of a token that could not arrive, and a stolen refresh token
+  outlived the sign-out by up to 7 days while the user was told they had been signed out.
+  Sign-out is now a route handler *inside* that path, and revocation is asserted in the database.
+
 ### P1 — Remaining
-1. **The *frontend* session cookie is still plain JSON** (`bb_session` = `{role,id}`), forgeable.
-   The backend half is done — it issues and verifies an ES256 JWT (`WI-17`) and authorizes every
-   request against it (`WI-20`) — but `bbank/src/lib/session.ts` and `proxy.ts` still parse the old
-   cookie. _Fix:_ `jose` ES256 verification against `/api/v1/auth/public-key` (`WI-19`).
-   **Until then `/api/go/*` returns 401 to the frontend:** the API requires a token the frontend
-   does not yet send.
-2. **Admin is still a hardcoded credential** in the login server action (`WI-18`).
+1. **Admin is still a hardcoded credential** in the login server action (`WI-18`).
    _Fix:_ bootstrap the first admin from a one-time invite; add invite / suspend / role-change.
+   The credential no longer *works* — only the API can sign a session (`WI-17`/`WI-19`) — but the
+   literal is still in the source and there is still no supported way to create the first admin.
+2. **Signup and donor create/edit have no endpoint** (`WI-22`). `POST /donors` and
+   `PUT /donors/{id}` were served by `internal/legacy` against the pre-migration `donors` table;
+   `WI-11` carried only the reads across. The forms now say so rather than posting into a 404.
 3. **No appointment/request delete or cancel** (backend + UI).
    The authorization for it now exists — `cancel` is a declared transition for donors, staff and
    admin — but no endpoint or UI calls it yet.
@@ -189,18 +203,59 @@ _Resolved since this list was written:_ open CORS (now an explicit allowlist wit
 
 ## Suggested Next Steps (sequenced)
 
-1. **`WI-19` — frontend session migration.** Now the immediate blocker, not merely the next item:
-   the backend requires a token the frontend does not send, so the donor and admin pages are dark
-   until `proxy.ts` and `session.ts` move to `jose` ES256 verification.
-2. `WI-18` — remove the hardcoded admin; invite / suspend / role-change.
-3. `WI-21`/`WI-22` — `/api/v1` prefix and envelopes; migrate requests and appointments out of
-   `internal/legacy`, where the ownership rules currently live as hand-written SQL predicates.
-4. `WI-30` — the Phase 1 safety regression suite, now that the RBAC half of it exists.
+1. **`WI-22` — restore the write paths.** Now the most visible gap: signup and donor create/edit
+   have had no endpoint since `WI-11` moved donors to the layered handlers with reads only. The
+   forms currently say so honestly, which is the right stopgap and a poor product.
+2. `WI-18` — remove the hardcoded admin; invite / suspend / role-change. Needed before anyone can
+   create the `staff`, `lab_tech` and `hospital_user` accounts the six-role guard now supports.
+3. `WI-21` — `/api/v1` prefix and envelopes; the frontend's `apiClient.ts` already unwraps both
+   shapes, so the migration can proceed endpoint by endpoint without touching pages.
+4. `WI-30` — the Phase 1 safety regression suite. `WI-19`'s checks were run by hand against a live
+   stack; they should be Playwright journeys that fail in CI, not a changelog entry.
 5. Appointment/request cancel endpoints + admin donor edit/delete UI.
 
 ---
 
 ## Changelog
+- **2026-09-01** — **`WI-19` complete: the frontend verifies the token, and the app works again.**
+  `session.ts` and `proxy.ts` no longer `JSON.parse` a cookie the browser could edit by hand; both
+  verify an ES256 signature through one runtime-agnostic module (`lib/jwt.ts`), which is what
+  **closes `OD-16`**: `jose` uses Web Crypto, so the *same* code verifies on the Edge runtime in
+  `proxy.ts` and on Node in server components. That is the property ES256 was chosen for in
+  TRD `Q7`, now demonstrated rather than assumed. The frontend holds only the public half.
+  **The `WI-20` migration window is closed.** `lib/apiClient.ts` is the single way this app talks
+  to the API: it re-attaches the session cookie to every server-to-server call (the omission that
+  made every page 401), unwraps both the `{data, page}` envelope and the bare arrays the legacy
+  handlers still return, and stamps an `Idempotency-Key` on mutations so `WI-77` has something to
+  switch on. `apiListOrEmpty` absorbs only `ApiError` — never Next.js's `redirect()`/`notFound()`
+  control flow, which a blanket catch had been swallowing — and deliberately **re-throws 401**,
+  because rendering "0 donors" to someone whose session expired is a lie.
+  **A defect found in this work item's own code, fixed here.** Logout was a server action, and a
+  server action posts to the page's own URL — a path `bb_rt` (`Path=/api/v1/auth/refresh`) is never
+  sent to. So it read `undefined`, skipped the revocation call for want of a token that could not
+  arrive, deleted the cookies, and told the user they had been signed out while the refresh family
+  stayed valid for its full 7 days. Sign-out is now a route handler nested *inside* the refresh
+  path — the only place on this origin that receives the cookie — and `clearSession()` was deleted
+  rather than left as a helper that does the easy half. Verified in the database: the family is
+  `revoked_reason = 'logout'` after clicking the button, and was demonstrably not before.
+  **Reads and writes are split by module, not by convention.** Everything in a `'use server'` file
+  becomes a callable POST endpoint, so `lib/data/*` holds the reads and `lib/actions/*` the
+  mutations. `requestAppointment` no longer sends a `donor_id` at all — the API takes it from the
+  `sub` claim, so a donor cannot raise a request in someone else's name.
+  **Verified end-to-end against the running stack**, three roles and six areas: anonymous → login
+  for every guarded prefix; a donor refused `/admin` and `/staff` and redirected to their own
+  record; **`staff` refused `/admin`** and `/lab`; a donor opening another donor's page bounced to
+  their own. Tampering: one flipped signature byte, a payload forged to `role: admin`, and an
+  `alg: none` token each ended at the login page. Refresh: an expired token routed to the refresh
+  handler, rotated to a genuinely different token, and returned to the page it came from — with
+  `_r=1` breaking the loop when it still fails, and `next=//evil.example` rewritten to `/`.
+  A live donor page rendered real profile data, and "Request appointment" wrote a `pending` row
+  owned by the caller's own id. Frontend `tsc`, `eslint` and `next build` clean; backend `go build`,
+  `go vet` and `archcheck.sh` unchanged and passing. Fixtures removed afterwards.
+  **Not done here, deliberately:** signup and donor create/edit have had no endpoint since `WI-11`;
+  the forms now say so instead of posting into a 404 (`WI-22`). `/staff`, `/lab`, `/inventory` and
+  `/hospital` are placeholders naming the work item that fills them, so a real account lands
+  somewhere honest instead of a 404.
 - **2026-09-01** — **`WI-20` complete: RBAC middleware and ownership from the token.**
   The TRD §7.6 permission matrix now lives in `internal/domain/rbac.go` as **data** — 22 resources ×
   6 roles × 5 actions — rather than as `if role == "admin"` scattered through handlers. `domain`
