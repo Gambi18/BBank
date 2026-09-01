@@ -3,9 +3,12 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"bbank/internal/domain"
 	"bbank/internal/http/dto"
@@ -29,7 +32,120 @@ func (h *DonorHandler) Routes() chi.Router {
 	r.With(middleware.RequirePermission("donor_profiles", domain.Read)).Get("/", h.list)
 	r.With(middleware.RequirePermission("donor_profiles", domain.Read)).Get("/{id}", h.get)
 	r.With(middleware.RequirePermission("donor_profiles", domain.Read)).Get("/{id}/eligibility", h.eligibility)
+	r.With(middleware.RequirePermission("donor_profiles", domain.Update)).Patch("/{id}", h.update)
 	return r
+}
+
+// PublicRoutes are the donor endpoints reachable WITHOUT a session.
+//
+// Only self-registration (TRD §6.5: `pub`). It is mounted separately rather
+// than being carved out of Routes with an exception, because an exception
+// inside an authenticated router is the kind of thing that gets copied to the
+// next endpoint by accident. A separate router makes the public surface a list
+// somebody can read.
+func (h *DonorHandler) PublicRoutes(idem middleware.IdempotencyStore) chi.Router {
+	r := chi.NewRouter()
+	r.With(middleware.Idempotency(idem, false)).Post("/", h.create)
+	return r
+}
+
+// create registers a donor.
+//
+// Self-registration is public, so `allowClinical` is false: blood group and
+// rhesus are laboratory results (FR-21), and a value someone types about their
+// own blood is not evidence. Staff and admin creating a donor on the desk may
+// set them, which is decided from the verified token, never from the body.
+func (h *DonorHandler) create(w http.ResponseWriter, r *http.Request) {
+	var in dto.CreateDonor
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		response.BadRequest(w, r, "invalid JSON body")
+		return
+	}
+
+	var details []response.Detail
+	if strings.TrimSpace(in.Email) == "" {
+		details = append(details, response.Detail{Field: "email", Issue: "required"})
+	}
+	if strings.TrimSpace(in.FullName) == "" {
+		details = append(details, response.Detail{Field: "full_name", Issue: "required"})
+	}
+	if in.Password == "" {
+		details = append(details, response.Detail{Field: "password", Issue: "required"})
+	}
+	if len(details) > 0 {
+		response.Unprocessable(w, r, "some required details are missing", details...)
+		return
+	}
+
+	p := service.CreateParams{
+		Email: in.Email, Password: in.Password, FullName: in.FullName,
+		Gender: in.Gender, Phone: in.Phone, Address: in.Address,
+		BloodGroup: in.BloodGroup, Rhesus: in.Rhesus,
+	}
+	if in.DateOfBirth != "" {
+		dob, err := time.Parse("2006-01-02", in.DateOfBirth)
+		if err != nil {
+			response.Unprocessable(w, r, "date_of_birth must be YYYY-MM-DD",
+				response.Detail{Field: "date_of_birth", Issue: "not a date"})
+			return
+		}
+		p.DateOfBirth = dob
+	}
+	// Clinical fields only for a caller the matrix grants wider than "own".
+	allowClinical := false
+	if id, ok := middleware.IdentityFrom(r.Context()); ok {
+		allowClinical = id.Role == domain.RoleStaff || id.Role == domain.RoleAdmin
+	}
+
+	newID, err := h.svc.Create(r.Context(), p, allowClinical)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Location", "/api/v1/donors/"+strconv.FormatInt(newID, 10))
+	response.Created(w, map[string]int64{"id": newID})
+}
+
+// update edits a donor profile. A donor may edit their own; admin may edit any.
+// Ownership comes from the token via resolveOwned, never from the URL alone.
+func (h *DonorHandler) update(w http.ResponseWriter, r *http.Request) {
+	id, ok := idParam(w, r)
+	if !ok {
+		return
+	}
+	if !resolveOwned(w, r, id) {
+		return
+	}
+	var in dto.UpdateDonor
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		response.BadRequest(w, r, "invalid JSON body")
+		return
+	}
+
+	p := service.UpdateParams{
+		FullName: in.FullName, Gender: in.Gender, Phone: in.Phone,
+		Address: in.Address, City: in.City, Region: in.Region,
+		NationalID:           in.NationalID,
+		EmergencyContactName: in.EmergencyContactName, EmergencyContactPhone: in.EmergencyContactPhone,
+		BloodGroup: in.BloodGroup, Rhesus: in.Rhesus,
+	}
+	if in.DateOfBirth != "" {
+		dob, err := time.Parse("2006-01-02", in.DateOfBirth)
+		if err != nil {
+			response.Unprocessable(w, r, "date_of_birth must be YYYY-MM-DD",
+				response.Detail{Field: "date_of_birth", Issue: "not a date"})
+			return
+		}
+		p.DateOfBirth = dob
+	}
+	caller, _ := middleware.IdentityFrom(r.Context())
+	allowClinical := caller.Role == domain.RoleStaff || caller.Role == domain.RoleAdmin
+
+	if err := h.svc.Update(r.Context(), id, p, allowClinical); err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	response.NoContent(w)
 }
 
 // resolveOwned enforces TRD §7.7: the donor id in a URL is NOT identity.

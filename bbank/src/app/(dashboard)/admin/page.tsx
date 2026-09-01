@@ -57,19 +57,11 @@ async function admin() {
                 </div>
 
                 {/*
-                  The write endpoint this form posted to went away when donors moved
-                  to the layered handlers (WI-11 kept only the reads); WI-22 restores
-                  it. Saying so is better than a form that looks live and fails on
-                  submit — and better than deleting the UI, which would lose the
-                  design work and hide the gap.
+                  Live again as of WI-22. Staff and admin MAY set the blood group
+                  here — unlike self-registration, where it is ignored — because at
+                  the desk it is transcribed from a lab result rather than
+                  self-reported (FR-21).
                 */}
-                <p id="create-donor-unavailable" className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                    <strong className="font-semibold">Temporarily unavailable.</strong>{' '}
-                    Donor registration is being rebuilt on the new schema (<code>WI-22</code>). The form
-                    below is disabled until then.
-                </p>
-
-                <fieldset disabled aria-describedby="create-donor-unavailable" className="opacity-60">
                 <form action={createDonor} className='grid sm:grid-cols-2 gap-5'>
                     <div>
                         <label className="label" htmlFor="name">Full name</label>
@@ -89,7 +81,12 @@ async function admin() {
                     </div>
                     <div>
                         <label className="label" htmlFor="gender">Gender</label>
-                        <input id="gender" type="text" name="gender" placeholder='Gender' className='field' />
+                        <select id="gender" name="gender" defaultValue="undisclosed" className='field'>
+                            <option value="female">Female</option>
+                            <option value="male">Male</option>
+                            <option value="other">Other</option>
+                            <option value="undisclosed">Prefer not to say</option>
+                        </select>
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                         <div>
@@ -117,7 +114,6 @@ async function admin() {
                         <button type="submit" className='btn btn-primary px-8'>Add donor</button>
                     </div>
                 </form>
-                </fieldset>
             </div>
         </div>
     )

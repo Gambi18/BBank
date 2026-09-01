@@ -13,20 +13,11 @@ export default function Signup() {
                     <p className="text-zinc-500 text-sm mt-1.5">Join the registry — it takes under a minute.</p>
 
                     {/*
-                      Signup posted to POST /api/v1/donors, which went away when donors
-                      moved to the layered handlers (WI-11 carried only the reads over).
-                      WI-22 rebuilds it as POST /api/v1/donors, writing a `users` row and
-                      a `donor_profiles` row in one transaction. Until then the form says
-                      so rather than accepting details and losing them.
+                      Live again as of WI-22: POST /api/v1/register writes a `users` row
+                      and a `donor_profiles` row in one statement, then signs the new
+                      donor straight in. Blood group is deliberately not collected here —
+                      it is a laboratory result (FR-21), not something to self-report.
                     */}
-                    <p id="signup-unavailable" className="mt-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                        <strong className="font-semibold">Signup is temporarily unavailable.</strong>{' '}
-                        Registration is being rebuilt on the new donor schema (<code>WI-22</code>).
-                        If you already have an account you can still{' '}
-                        <Link href="/login" className="font-semibold underline underline-offset-2">log in</Link>.
-                    </p>
-
-                    <fieldset disabled aria-describedby="signup-unavailable" className="opacity-60">
                     <form action={signup} className="flex flex-col gap-5 mt-8">
                         <div className="animate-fade-up anim-delay-1">
                             <label className="label" htmlFor="full_name">Full name</label>
@@ -40,15 +31,27 @@ export default function Signup() {
                             <label className="label" htmlFor="email">Email</label>
                             <input id="email" type="email" name="email" placeholder="amara@example.com" className="field" required autoComplete="email" />
                         </div>
+                        <div className="animate-fade-up anim-delay-3">
+                            <label className="label" htmlFor="gender">Gender</label>
+                            <select id="gender" name="gender" className="field" defaultValue="undisclosed">
+                                <option value="female">Female</option>
+                                <option value="male">Male</option>
+                                <option value="other">Other</option>
+                                <option value="undisclosed">Prefer not to say</option>
+                            </select>
+                        </div>
+                        <div className="animate-fade-up anim-delay-4">
+                            <label className="label" htmlFor="contact_phone">Phone</label>
+                            <input id="contact_phone" type="tel" name="contact_phone" placeholder="+237 6 77 00 00 00" className="field" autoComplete="tel" />
+                        </div>
                         <div className="animate-fade-up anim-delay-4">
                             <label className="label" htmlFor="password">Password</label>
-                            <input id="password" type="password" name="password" placeholder="••••••••" className="field" required autoComplete="new-password" />
+                            <input id="password" type="password" name="password" placeholder="At least 8 characters" className="field" required minLength={8} autoComplete="new-password" />
                         </div>
                         <button type='submit' className="btn btn-primary w-full mt-2 animate-fade-up anim-delay-5">
                             Sign up <FaArrowRight className="text-sm" />
                         </button>
                     </form>
-                    </fieldset>
 
                     <div className="flex items-center gap-4 my-7 text-zinc-400 text-xs">
                         <span className="flex-1 h-px bg-black/5" /> OR <span className="flex-1 h-px bg-black/5" />

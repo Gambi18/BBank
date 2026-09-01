@@ -1,6 +1,6 @@
-import { FaCheck, FaInbox } from 'react-icons/fa6'
-import { listRequests } from '@/lib/data/requests'
-import { confirmRequest } from '@/lib/actions/requests'
+import { FaCheck, FaInbox, FaXmark } from 'react-icons/fa6'
+import { listRequests, listRejectionReasons } from '@/lib/data/requests'
+import { confirmRequest, rejectRequest } from '@/lib/actions/requests'
 
 const initials = (name: string) =>
     name.split(' ').map((p) => p[0]).filter(Boolean).slice(0, 2).join('').toUpperCase() || '?'
@@ -8,7 +8,9 @@ const initials = (name: string) =>
 const fmtDate = (d: string) => (d ? new Date(d).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : null)
 
 async function Requests() {
-    const data = await listRequests()
+    // Both reads in parallel: the reason list is small and cached upstream, but
+    // serialising them would still add a round trip to every page load.
+    const [data, reasons] = await Promise.all([listRequests(), listRejectionReasons()])
 
     // Thin adapter: the action itself lives in lib/actions/requests.ts (TRD §4.3)
     // so it can be tested without rendering a page. Editing the hidden field to
@@ -19,6 +21,15 @@ async function Requests() {
         'use server'
         const id = Number(formData.get('requestId'))
         await confirmRequest(id, String(formData.get('date') || ''))
+    }
+
+    // Rejection needs a coded reason (FR-09). The note is optional except for
+    // 'other', where the API refuses without it — the form mirrors that rather
+    // than letting someone discover it after typing.
+    async function reject(formData: FormData) {
+        'use server'
+        const id = Number(formData.get('requestId'))
+        await rejectRequest(id, String(formData.get('reason') || ''), String(formData.get('note') || ''))
     }
 
     return (
@@ -45,6 +56,7 @@ async function Requests() {
                                 <th>Last donation</th>
                                 <th>Requested</th>
                                 <th>Schedule</th>
+                                <th>Reject</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -73,11 +85,32 @@ async function Requests() {
                                             </button>
                                         </form>
                                     </td>
+                                    <td>
+                                        <form action={reject} className='flex gap-2 items-center'>
+                                            <input type="hidden" name="requestId" value={request.id} />
+                                            <select name="reason" title="Reason for rejection" className='field !w-auto !py-1.5 text-sm' required defaultValue="">
+                                                <option value="" disabled>Reason…</option>
+                                                {reasons.map((r) => (
+                                                    <option key={r.value} value={r.value}>{r.label}</option>
+                                                ))}
+                                            </select>
+                                            <input
+                                                type="text"
+                                                name="note"
+                                                placeholder="Note (required for 'other')"
+                                                title="Optional note; required when the reason is 'other'"
+                                                className='field !w-auto !py-1.5 text-sm'
+                                            />
+                                            <button type="submit" className='btn btn-ghost btn-sm text-rose-700'>
+                                                <FaXmark className="text-xs" /> Reject
+                                            </button>
+                                        </form>
+                                    </td>
                                 </tr>
                             ))}
                             {data.length === 0 && (
                                 <tr>
-                                    <td colSpan={4} className="!py-16 text-center">
+                                    <td colSpan={5} className="!py-16 text-center">
                                         <div className="flex flex-col items-center gap-3">
                                             <span className="w-12 h-12 rounded-2xl bg-zinc-100 flex items-center justify-center text-zinc-400 text-xl">
                                                 <FaInbox />

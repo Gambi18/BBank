@@ -127,3 +127,38 @@ func (d Donor) Validate() error {
 	}
 	return nil
 }
+
+// Gender mirrors the `gender` enum. Declared here so the permitted values are
+// checked before a query runs: an unrecognised one is a 422 naming the field,
+// not a Postgres "invalid input value for enum" surfacing as a 500.
+//
+// The set is deliberately read from the schema rather than assumed. There is no
+// "unknown" — the schema's word for "not stated" is `undisclosed`, and guessing
+// otherwise is what this constant exists to stop.
+type Gender string
+
+const (
+	GenderMale        Gender = "male"
+	GenderFemale      Gender = "female"
+	GenderOther       Gender = "other"
+	GenderUndisclosed Gender = "undisclosed"
+)
+
+// GenderUnstated is the value to use when a form does not ask. Naming it means
+// callers never have to invent a spelling for "they didn't say".
+const GenderUnstated = GenderUndisclosed
+
+var ErrInvalidGender = errors.New("gender must be male, female, other or undisclosed")
+
+// ParseGender normalises what a form sends. An empty value is `undisclosed`,
+// because "not asked" and "declined to say" are the same fact about the record.
+func ParseGender(s string) (Gender, error) {
+	switch t := Gender(strings.ToLower(strings.TrimSpace(s))); t {
+	case "":
+		return GenderUnstated, nil
+	case GenderMale, GenderFemale, GenderOther, GenderUndisclosed:
+		return t, nil
+	default:
+		return "", fmt.Errorf("%w: got %q", ErrInvalidGender, s)
+	}
+}

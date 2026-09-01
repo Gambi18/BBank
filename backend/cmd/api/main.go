@@ -7,7 +7,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -21,7 +20,6 @@ import (
 	"bbank/internal/platform"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	_ "github.com/lib/pq" // legacy database/sql path; removed when internal/legacy is empty
 )
 
 func main() {
@@ -55,18 +53,10 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Legacy path: database/sql, for resources internal/legacy still serves.
-	// Deleted along with that package once WI-22 finishes the migration.
-	legacyDB, err := sql.Open("postgres", cfg.DatabaseURL)
-	if err != nil {
-		logger.Error("cannot open legacy database handle", "error", err)
-		os.Exit(1)
-	}
-	defer legacyDB.Close()
-	legacyDB.SetMaxOpenConns(10)
-	legacyDB.SetMaxIdleConns(10)
-	legacyDB.SetConnMaxLifetime(30 * time.Minute)
-	legacyDB.SetConnMaxIdleTime(5 * time.Minute)
+	// WI-22 removed the second, database/sql connection pool. It existed only
+	// for internal/legacy, which is now deleted: the whole API runs on one pgx
+	// pool, so there is one place where connection limits are configured and
+	// one pool to watch under load.
 
 	// The DB may still be initialising in Docker; retry rather than exiting and
 	// taking the container down with us.
@@ -100,7 +90,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           bbhttp.NewRouter(bbhttp.Deps{Cfg: cfg, Pool: pool, LegacyD: legacyDB, Signer: signer, Flags: flags}),
+		Handler:           bbhttp.NewRouter(bbhttp.Deps{Cfg: cfg, Pool: pool, Signer: signer, Flags: flags}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

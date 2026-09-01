@@ -57,3 +57,37 @@ function describe(e: unknown, fallback: string): string {
     }
     return fallback
 }
+
+/**
+ * Reject a pending request with a reason from the controlled list (`FR-09`).
+ *
+ * The reason is a code, not free text: `rejection_reason` feeds the fulfilment
+ * report (`FR-61`), which cannot aggregate prose. The optional note is the place
+ * for the specifics, and it is *required* when the reason is `other`, so that
+ * option stays a real answer rather than a hole in the vocabulary.
+ */
+export async function rejectRequest(requestId: number, reason: string, note: string) {
+    if (!reason) redirect(flash('/admin/requests', { error: 'Pick a reason first' }))
+
+    try {
+        await apiPost(`/api/v1/donation-requests/${requestId}/reject`, { reason, note })
+    } catch (e) {
+        return redirect(flash('/admin/requests', { error: describe(e, 'Failed to reject the request') }))
+    }
+
+    revalidatePath('/admin/requests')
+    revalidatePath('/admin')
+    redirect(flash('/admin/requests', { success: 'Request rejected' }))
+}
+
+/** A donor withdrawing their own request, or staff doing it for them (`FR-11`). */
+export async function cancelRequest(requestId: number, back: string) {
+    try {
+        await apiPost(`/api/v1/donation-requests/${requestId}/cancel`, {})
+    } catch (e) {
+        return redirect(flash(back, { error: describe(e, 'Failed to cancel the request') }))
+    }
+
+    revalidatePath(back)
+    redirect(flash(back, { success: 'Request cancelled' }))
+}

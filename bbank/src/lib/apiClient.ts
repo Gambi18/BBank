@@ -130,6 +130,14 @@ export async function apiPut<T>(path: string, body?: unknown, opts?: Omit<Option
 }
 
 /**
+ * PATCH is the update verb on `/api/v1` (TRD §6.5), not PUT: these endpoints
+ * take the fields being changed, not a whole replacement resource.
+ */
+export async function apiPatch<T>(path: string, body?: unknown, opts?: Omit<Options, 'method' | 'body'>): Promise<T> {
+    return (await request<T>(path, { ...opts, method: 'PATCH', body })).data
+}
+
+/**
  * For read paths that would rather render an empty state than an error page.
  * Only swallows the error after deciding it is one the page can survive; an
  * unauthenticated call still throws, because rendering "0 donors" to someone

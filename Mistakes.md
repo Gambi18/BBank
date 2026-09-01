@@ -150,3 +150,20 @@ those two can disagree silently. Either normalise at the boundary and pass the n
 down, or return it back up — never both read the same input independently. And assert on the
 **pair**: a pagination test that checks the row count but not the reported limit would have passed
 here.
+
+### 2026-09-01 — Invented an enum value ("unknown") instead of reading the schema
+**Cause:** WI-22's donor-create path needed a default gender for a form that does not ask, and I
+wrote `"unknown"` from intuition. The `gender` enum is `male | female | other | undisclosed`. The
+schema's word for "not stated" is **undisclosed**.
+**Course:** every signup failed. Postgres rejected the invalid enum value, the service returned a
+generic 500, and the frontend showed "Could not create your account" — a message that pointed at
+nothing, because the real error had (correctly) been kept out of the response. It cost a round of
+browser testing to find, and was briefly confused with an unrelated disk-full condition.
+**Solution:** `domain.ParseGender` now owns the permitted set and is the only thing that produces a
+value, with `domain.GenderUnstated` naming the default so no caller has to invent a spelling. An
+unrecognised gender is a 422 naming the field, not a 500.
+**Prevention:** the fourth instance of this repo's most repeated mistake — **guessing an identifier
+instead of reading it**. The rule already existed for columns and constraints; it applies to enum
+*values* too. One `\dT+` or `pg_enum` query is cheaper than one failed insert, every time. Corollary
+learned here: a generic 500 message is right for the client and useless for the developer, so when
+a write fails, read the *server* log before re-reading your own code.

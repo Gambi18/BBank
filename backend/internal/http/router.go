@@ -4,12 +4,10 @@ package http
 
 import (
 	"context"
-	"database/sql"
 	"net/http"
 	"time"
 
 	"bbank/internal/http/handlers"
-	"bbank/internal/legacy"
 	"bbank/internal/middleware"
 	"bbank/internal/platform"
 	"bbank/internal/service"
@@ -20,11 +18,10 @@ import (
 )
 
 type Deps struct {
-	Cfg     platform.Config
-	Pool    *pgxpool.Pool // new layered path (pgx + sqlc)
-	LegacyD *sql.DB       // strangler: resources not yet migrated
-	Signer  *platform.Signer
-	Flags   *platform.Flags
+	Cfg    platform.Config
+	Pool   *pgxpool.Pool
+	Signer *platform.Signer
+	Flags  *platform.Flags
 }
 
 // NewRouter builds the full HTTP surface.
@@ -91,14 +88,24 @@ func NewRouter(d Deps) http.Handler {
 		_, _ = w.Write([]byte(pem))
 	})
 
+	idem := service.NewIdempotencyService(q)
+
+	// WI-22: donation requests and appointments are served by the layered
+	// handlers. internal/legacy is gone — the strangler finished.
 	donors := handlers.NewDonorHandler(service.NewDonorService(q))
 	r.Mount("/api/v1/donors", donors.Routes())
+	// Self-registration is the one donor endpoint with no session (TRD §6.5).
+	// Mounted before the authenticated router so chi matches the bare POST here.
+	r.Mount("/api/v1/register", donors.PublicRoutes(idem))
+
+	r.Mount("/api/v1/donation-requests",
+		handlers.NewDonationRequestHandler(service.NewDonationRequestService(d.Pool, q), idem).Routes())
+	r.Mount("/api/v1/appointments",
+		handlers.NewAppointmentHandler(service.NewAppointmentService(q)).Routes())
 
 	// Operational, not clinical: gated on the admin role directly rather than on
 	// the §7.6 matrix, which owns domain resources and denies unknown ones.
 	r.Mount("/api/v1/admin/flags", handlers.NewFlagHandler(d.Flags).Routes())
-
-	legacy.RegisterRoutes(r, d.LegacyD, service.NewIdempotencyService(q))
 
 	return r
 }

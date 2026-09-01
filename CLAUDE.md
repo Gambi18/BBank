@@ -10,8 +10,8 @@ appointments; an admin reviews requests and confirms them into scheduled appoint
 - `bbank/` — **Frontend.** Next.js 16 (App Router), React 19, Tailwind 4. Uses server
   components + server actions to talk to the Go API. Path alias `@/*` → `src/*`.
 - `backend/` — **Backend.** Layered Go API (`cmd/api` → `internal/{domain,service,store,http}`)
-  using `chi` + `pgx`/`sqlc`, with a shrinking `internal/legacy` shim. Migrations are applied by
-  `golang-migrate`, never at boot. Listens on `:8000`. See **Conventions** below.
+  using `chi` + `pgx`/`sqlc`. Migrations are applied by `golang-migrate`, never at boot.
+  Listens on `:8000`. See **Conventions** below.
 - `compose.yaml` — Docker Compose: `goapp` (8000), `db` (Postgres 18; host 5433 → container 5432),
   `frontend` (3000).
 
@@ -74,7 +74,6 @@ through `src/lib/api.ts` (`API_BASE_URL`, set to `http://goapp:8000` in compose)
     internal/store/   sqlc-generated queries (pgx). Never hand-edit; run `sqlc generate`
     internal/http/    router, handlers/, dto/, response/ — imports service
     internal/middleware/, internal/platform/
-    internal/legacy/  the old single-file handlers, shrinking. Do not add to it
     migrations/       golang-migrate SQL, applied by the `migrate` compose service
     queries/          .sql input for sqlc
   ```
@@ -88,10 +87,17 @@ through `src/lib/api.ts` (`API_BASE_URL`, set to `http://goapp:8000` in compose)
   `rows.Scan` positional over hundreds of columns, and had no seam for testing. The change
   is deliberate and is recorded in `TRD.md` §4.4.
 
-- **Migrating a resource out of `internal/legacy`** (the strangler): add its queries to
-  `queries/<resource>.sql`, run `sqlc generate`, add a service, add a handler, mount it in
-  `internal/http/router.go`, then delete the legacy handler and its route. `donors` is the
-  worked example — follow it.
+- **`internal/legacy` no longer exists** (`WI-22` finished the strangler). Every endpoint is
+  layered. To add a resource: write `queries/<resource>.sql`, run `sqlc generate`, add a service,
+  add a handler, mount it in `internal/http/router.go`. `donation_requests` is the fullest worked
+  example — it has a transaction, a row lock, a state machine and a controlled vocabulary.
+- **Errors cross layers as sentinels, never as driver errors.** A service returns
+  `service.ErrNotFound` / `ErrConflict` / `ErrInvalid`; `handlers.writeServiceError` is the single
+  place those become status codes. Constraint violations are translated in `internal/service`
+  (`pgerr.go`) — attempt the write and interpret the failure, because checking first and trusting
+  the answer is a race.
+- **Never invent an enum value.** Read it: `\dT+` in psql, or `pg_enum`. "Not stated" for gender is
+  `undisclosed`, not `unknown` — that guess broke every signup once already (`Mistakes.md`).
 - **Never hand-edit `internal/store/`.** It is generated. CI fails if it is stale.
 - - Frontend mutations use **server actions** (`'use server'`) that fetch the Go API, then
   `redirect(...?success=...|error=...)`; `components/ToastAlert.tsx` renders those query params.

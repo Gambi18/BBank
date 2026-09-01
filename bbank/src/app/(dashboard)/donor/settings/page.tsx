@@ -21,18 +21,12 @@ async function DonorSettings() {
 
             <div className="card p-8">
                 {/*
-                  The PUT endpoint behind this form went away when donors moved to
-                  the layered handlers (WI-11 brought only the reads across); WI-22
-                  restores it as PATCH /api/v1/donors/{id}. The fields still render
-                  with your current details so the page is useful to read.
+                  Live again as of WI-22: PATCH /api/v1/donors/{id}. Ownership comes
+                  from the token, so this saves your own profile and nobody else's
+                  regardless of what the URL says. Blood group is absent on purpose —
+                  it is a lab result (FR-21), and the API carries the recorded value
+                  forward rather than letting this form blank it.
                 */}
-                <p id="profile-unavailable" className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                    <strong className="font-semibold">Editing is temporarily unavailable.</strong>{' '}
-                    Your profile is being rebuilt on the new schema (<code>WI-22</code>). Everything below
-                    is shown read-only until then.
-                </p>
-
-                <fieldset disabled aria-describedby="profile-unavailable" className="opacity-60">
                 <form action={updateDonorProfile} className='grid sm:grid-cols-2 gap-5'>
                     <div className="sm:col-span-2">
                         <label className="label" htmlFor="full_name">Full name</label>
@@ -48,7 +42,12 @@ async function DonorSettings() {
                     </div>
                     <div>
                         <label className="label" htmlFor="gender">Gender</label>
-                        <input id="gender" type="text" name="gender" defaultValue={d.gender ?? ''} placeholder="Gender" className='field' />
+                        <select id="gender" name="gender" defaultValue={d.gender ?? 'undisclosed'} className='field'>
+                            <option value="female">Female</option>
+                            <option value="male">Male</option>
+                            <option value="other">Other</option>
+                            <option value="undisclosed">Prefer not to say</option>
+                        </select>
                     </div>
                     <div>
                         <label className="label" htmlFor="contact_phone">Contact</label>
@@ -62,7 +61,6 @@ async function DonorSettings() {
                         <button type="submit" className='btn btn-primary px-8'>Save changes</button>
                     </div>
                 </form>
-                </fieldset>
 
                 {/*
                   Blood group, rhesus and donation count are deliberately NOT fields

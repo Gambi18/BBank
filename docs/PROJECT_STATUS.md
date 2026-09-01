@@ -1,7 +1,7 @@
 # BBank — Project Status
 
 > **Living document.** Update this file whenever a feature lands, a bug is fixed, or scope changes.
-> Last updated: **2026-09-01** · Branch: `oc-redesign-skill-refactor`
+> Last updated: **2026-09-02** · Branch: `oc-redesign-skill-refactor`
 >
 > How to keep it current: tick the checkboxes, adjust the % in the **Completion Snapshot**,
 > and move items between _Weaknesses_ and _Done_. See `CLAUDE.md` → "Maintaining this file".
@@ -42,12 +42,12 @@ the legacy scope; it will be rebaselined against the new scope at the `WI-06` bo
 
 | Area                     | Status | Notes |
 |--------------------------|:------:|-------|
-| Backend API (CRUD)       |  92%   | Layered structure live (`cmd/api`, `internal/{domain,service,store,http}`); `donors` served through it with pagination + search; everything else via the shrinking `internal/legacy` shim. Approving a request is now a **status transition, not a DELETE**. `WI-21`: `/api/v1` is canonical and enveloped, `/api/go` is a rewriting alias with `Deprecation`/`Sunset`, list endpoints are bounded, and idempotency storage is live |
-| Frontend UI / pages      |  95%   | Design refinement pass: Outfit font, tinted shadows, grain overlay, staggered layouts, richer empty/loading states, custom 404, legal pages, OG meta, skip-to-content. **Down 2 points deliberately** (`WI-19`): signup and donor create/edit now say they are unavailable rather than posting into a 404 — the endpoints went away with `WI-11` and return with `WI-22`. Four role areas (`/staff`, `/lab`, `/inventory`, `/hospital`) are honest placeholders |
+| Backend API (CRUD)       |  96%   | **`internal/legacy` is deleted — the strangler finished** (`WI-22`). Every endpoint is layered (`cmd/api`, `internal/{domain,service,store,http}`), with one pgx pool instead of two. Approving a request is now a **status transition, not a DELETE**. `WI-21`: `/api/v1` is canonical and enveloped, `/api/go` is a rewriting alias with `Deprecation`/`Sunset`, list endpoints are bounded, and idempotency storage is live |
+| Frontend UI / pages      |  97%   | Design refinement pass: Outfit font, tinted shadows, grain overlay, staggered layouts, richer empty/loading states, custom 404, legal pages, OG meta, skip-to-content. `WI-22` restored every switched-off write path — signup (with auto-login), donor profile edit, admin add-donor — and added the reject UI, whose reason list is **read from the API** rather than hardcoded. Four role areas (`/staff`, `/lab`, `/inventory`, `/hospital`) are honest placeholders |
 | Auth & Security          |  93%   | **ES256 JWT + rotating refresh** (`WI-17`) now **verified on every request**, with the full TRD §7.6 permission matrix and §7.7 ownership enforced as middleware (`WI-20`). Ownership comes from the `sub`/`cid`/`hid` claims — never from a query parameter. **The frontend now verifies the same token** (`WI-19`): `proxy.ts` on the Edge runtime, server components on Node, one `jose` module for both. TODO: remove the hardcoded admin (`WI-18`) |
 | Data model / DB          |  97%   | **Schema complete.** Migrations `000000`–`000016` verified `up → down -all → up` on a fresh database: 26 tables, 21 enums, 4 views, 82 indexes, 18 triggers, 43 FKs, 14 policy rows, plus `000016` `idempotency_keys` (`WI-21`). Remaining: drop-legacy-donors, deliberately deferred to `WI-37` |
 | DevOps / Docker          |  92%   | + golang-migrate, `migrate` compose service, env-injected secrets, server timeouts, graceful shutdown, structured logs, `/healthz` + `/readyz` |
-| Testing                  |  27%   | CI skeleton (gofmt, vet, build, golangci-lint, govulncheck, tsc, eslint, npm audit, gitleaks, migrate up/down/up). Unit tests for the domain (ABO, blood groups, seed cross-check, RBAC matrix + transitions) and the authorization middleware — **all 660 matrix cells asserted over HTTP, granted and denied**. `WI-21` adds the legacy-path rewrite table, the runtime shim toggle, pagination clamping, and idempotency replay/reuse/in-flight/5xx-release — all without a database. Still no service, handler or E2E tests — `WI-29` |
+| Testing                  |  31%   | CI skeleton (gofmt, vet, build, golangci-lint, govulncheck, tsc, eslint, npm audit, gitleaks, migrate up/down/up). Unit tests for the domain (ABO, blood groups, seed cross-check, RBAC matrix + transitions) and the authorization middleware — **all 660 matrix cells asserted over HTTP, granted and denied**. `WI-21` adds the legacy-path rewrite table, the runtime shim toggle, pagination clamping, and idempotency replay/reuse/in-flight/5xx-release. `WI-22` adds the donation-request state machine and the FR-09 rejection vocabulary — including a test asserting no reason describes the *person* rather than the request. All without a database. Still no service, handler or E2E tests — `WI-29` |
 | Documentation            |  90%   | Full planning set (8,100+ lines): PRD, TRD, User Journey, UI/UX Brief, DB Schema, Implementation Plan — all cross-referenced by FR/NFR/WI ID |
 
 ### Planning documents (added 2026-09-01)
@@ -84,8 +84,9 @@ schema doc; route paths by the user journey. Other documents cite, never redefin
 - [x] Requests list + confirm → creates appointment
 - [x] Appointments list
 - [x] Admin settings page (with logout)
-- [ ] Edit / delete donor from UI (backend supports it; no UI)
-- [ ] Reject / delete a request from UI
+- [x] Add a donor from the admin console (`WI-22`)
+- [x] Reject a request from the UI, with a reason from a controlled list (`WI-22`)
+- [ ] Delete / deactivate a donor from the UI (`WI-31`)
 
 ### Backend
 - [x] Donors: GET list, GET one, POST, PUT, DELETE
@@ -98,8 +99,11 @@ schema doc; route paths by the user journey. Other documents cite, never redefin
 - [x] Response envelopes everywhere — no bare arrays, no raw driver errors (`WI-21`)
 - [x] Bounded list endpoints: `?limit=&offset=`, clamped, applied limit reported (`WI-21`)
 - [x] Idempotency storage + replay middleware (`WI-21`; enforcement in `WI-77`)
-- [ ] Appointments: update / delete / cancel
-- [ ] Requests: delete / reject endpoint
+- [x] `internal/legacy` deleted — every endpoint layered (`WI-22`)
+- [x] Donation-request state machine; decided states are terminal (`WI-22`)
+- [x] Requests: reject (coded reason) and cancel endpoints (`WI-22`)
+- [x] Donors: create (public self-registration) and update (`WI-22`)
+- [ ] Appointments: reschedule / cancel (`WI-23`)
 - [ ] Session/JWT issuance from the backend (currently the frontend owns the cookie)
 
 ### Cross-cutting
@@ -190,12 +194,8 @@ All four P0 findings below are fixed and covered by an acceptance check. Origina
    _Fix:_ bootstrap the first admin from a one-time invite; add invite / suspend / role-change.
    The credential no longer *works* — only the API can sign a session (`WI-17`/`WI-19`) — but the
    literal is still in the source and there is still no supported way to create the first admin.
-2. **Signup and donor create/edit have no endpoint** (`WI-22`). `POST /donors` and
-   `PUT /donors/{id}` were served by `internal/legacy` against the pre-migration `donors` table;
-   `WI-11` carried only the reads across. The forms now say so rather than posting into a 404.
-3. **No appointment/request delete or cancel** (backend + UI).
-   The authorization for it now exists — `cancel` is a declared transition for donors, staff and
-   admin — but no endpoint or UI calls it yet.
+2. **No appointment reschedule or cancel** (`WI-23`). Donation requests can now be cancelled and
+   rejected (`WI-22`); appointments still cannot be moved or called off once scheduled.
 
 _Resolved since this list was written:_ open CORS (now an explicit allowlist with `Vary: Origin`).
 
@@ -207,22 +207,80 @@ _Resolved since this list was written:_ open CORS (now an explicit allowlist wit
 
 ## Suggested Next Steps (sequenced)
 
-1. **`WI-22` — migrate the three legacy resources, and restore the write paths.** `WI-21` put
-   donation requests and appointments on canonical, enveloped, paginated endpoints, but they are
-   still served from `internal/legacy` with hand-written SQL. This moves them into
-   handlers/service/store and rebuilds `POST /donors` + `PATCH /donors/{id}`, which have had no
-   endpoint since `WI-11` — the most visible remaining gap, since signup is switched off.
-2. `WI-18` — remove the hardcoded admin; invite / suspend / role-change. Needed before anyone can
-   create the `staff`, `lab_tech` and `hospital_user` accounts the six-role guard now supports.
-3. `WI-30` — the Phase 1 safety regression suite. The `WI-19` and `WI-21` checks were run by hand
-   against a live stack; they should be Playwright journeys that fail in CI, not a changelog entry.
-4. `WI-23` — appointment/request cancel and reschedule endpoints + admin donor edit/delete UI.
+1. **`WI-18` — remove the hardcoded admin; invite / suspend / role-change.** Now the top item.
+   `WI-22` gave every role something to do, but there is still no supported way to create the first
+   admin — or any `staff`, `lab_tech` or `hospital_user` account. Five of the six roles the guard
+   understands can currently only be created with hand-written SQL.
+2. **`WI-30` — the Phase 1 safety regression suite.** `WI-19`, `WI-21` and `WI-22` were each
+   verified by hand against a live stack. That is three consecutive work items whose evidence lives
+   in a changelog rather than in CI, and it is now **the largest risk in the project**: nothing
+   would fail if someone reintroduced any of the defects those sessions closed.
+3. `WI-23` — appointment reschedule/cancel and the daily no-show sweep.
+4. `WI-31` — admin donor edit/delete and the user console (`/admin/users`).
 5. `WI-77` — turn idempotency from recorded to **required** on the endpoints §6.5 marks `Idem`.
-   The storage and replay path land in `WI-21`; only the `required` flag is left.
+   The storage and replay path landed in `WI-21`; only the `required` flag is left.
 
 ---
 
 ## Changelog
+- **2026-09-02** — **`WI-22` complete: `internal/legacy` is deleted, and every switched-off write
+  path is live again.**
+  The strangler finished. Donation requests and appointments moved into
+  handlers → service → store, and the package that held the original single-file handlers is gone
+  — along with the second `database/sql` connection pool it needed, so the API now runs on one pgx
+  pool with one place to configure limits.
+  **Authorization stopped being string handling.** The legacy code built its scope filter by
+  concatenating `" AND r.donor_id = $1"` onto a query. It was correct, but a missing clause was a
+  wider result set rather than a compile error. The scope is now an explicit `service.Scope`, nil
+  meaning "not narrowed", decided once in `resolveScope` — and `?donor_id=` is a separate field
+  from the token-derived owner, so a filter can narrow a result set and never widen one. Defect
+  A14 is now a shape rather than a comment.
+  **Approve is atomic and locked.** `GetDonationRequestForUpdate` takes a `FOR UPDATE` row lock
+  before the status is checked, and ownership is evaluated on the locked row inside the same
+  transaction. Without the lock, two staff approving at once both read `pending`, both pass the
+  check, and the second insert dies on the UNIQUE over `appointments.donation_request_id` — a 500
+  for what is really a 409. Verified: approving twice returns **409 `request is approved`**, and
+  the request row survives as `approved` with a linked appointment (the `FR-09` acceptance
+  criterion, checked in the database).
+  **`FR-09`'s controlled vocabulary lives in `internal/domain`,** because the column is
+  `rejection_reason TEXT` — the schema enforces that a rejected request *has* a reason, and the
+  domain enforces that it is one we recognise. Free text is allowed only *alongside* a code, never
+  instead of one, or the fulfilment report (`FR-61`) degenerates into prose nobody can aggregate.
+  The list is **served from the API** (`GET /donation-requests/rejection-reasons`) so the dropdown
+  cannot drift from what the server accepts. Every value describes the **request, never the
+  person**: UI/UX §4 reserves "rejected" for requests, and a donor who cannot give today is
+  *deferred*, a different concept with its own table. There is a test asserting no reason contains
+  a word like "unsuitable" or "ineligible", because that failure would surface in a notification
+  to a human being.
+  **Decided states are terminal.** `pending` may go to approved, rejected, cancelled or expired;
+  nothing comes back. Re-opening a decided request would let an appointment exist against a row
+  that later reads `rejected`, and the audit chain would stop explaining itself.
+  **Blood group is not self-reportable** (`FR-21`). Self-registration ignores it even when sent;
+  staff and admin may set it. That asymmetry is the fix for defect D7 — the original system let
+  people type their own blood type, which is how `"O+"`, `"o"` and `" A "` ended up in one column.
+  A donor editing their profile also cannot blank the recorded value: the service carries it
+  forward rather than erasing it because a form omitted the field.
+  **Every stubbed form is live:** signup (which now signs the new donor straight in rather than
+  ending at a login screen), donor profile edit, admin add-donor, and the new reject UI. No
+  `fieldset disabled` remains anywhere in the app.
+  **A bug I introduced and caught:** the donor-create path defaulted gender to `"unknown"`, which
+  is not a value of the `gender` enum (`male | female | other | undisclosed`). Every signup failed
+  with a generic 500. `domain.ParseGender` now owns the permitted set, `GenderUnstated` names the
+  default so nobody has to invent a spelling, and an unrecognised value is a 422 naming the field.
+  Logged in `Mistakes.md` as the fourth instance of this repo's most-repeated error — guessing an
+  identifier instead of reading it.
+  **Verified end-to-end against the running stack:** both prefixes still serve; a donor's request
+  is created from the token with an empty body; a second one is **409**, not a constraint 500; a
+  donor approving their own request is 403; an unlisted rejection reason and a noteless `other` are
+  both 422; approving twice and rejecting an approved request are both 409; staff at centre 1 see
+  3 of 4 requests and get **404** reading or approving centre 2's; a donor's `?donor_id=` is
+  ignored; self-registration is 201 then logs in, a duplicate email is 409, and a self-claimed
+  blood group is discarded; a donor editing another donor is 404. In the browser: signup →
+  auto-login → dashboard, request an appointment, reject it from the admin console with a coded
+  reason, and edit a profile — each confirmed in the database. Fixtures removed afterwards.
+  **Note on the environment:** the host disk hit 100% mid-session and produced browser
+  `ERR_INSUFFICIENT_RESOURCES` failures unrelated to the code. 10.2 GB of reclaimable Docker
+  **build cache** was pruned (never images or volumes — volumes hold the databases).
 - **2026-09-01** — **`WI-21` complete: `/api/v1` is canonical, everything is enveloped, and the
   deprecated prefix is an alias rather than a second API.**
   `/api/go/` no longer has handlers of its own. `middleware.LegacyShim` rewrites those paths to
