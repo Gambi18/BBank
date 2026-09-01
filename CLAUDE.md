@@ -98,6 +98,12 @@ through `src/lib/api.ts` (`API_BASE_URL`, set to `http://goapp:8000` in compose)
   the answer is a race.
 - **Never invent an enum value.** Read it: `\dT+` in psql, or `pg_enum`. "Not stated" for gender is
   `undisclosed`, not `unknown` — that guess broke every signup once already (`Mistakes.md`).
+- **Tests that touch the database use `internal/testsupport`** (`WI-29`): it starts a real
+  PostgreSQL 18 via testcontainers and applies the real migrations. `testsupport.Pool(t)` gives a
+  migrated, empty database; `testsupport.FreshDatabase(t)` gives an unmigrated one for tests about
+  the migration path itself. Docker is required — `go test -short ./...` skips them.
+- **Coverage is gated**: `backend/coverage.sh` (also a CI job) enforces `internal/domain` ≥ 90% and
+  `internal/service` ≥ 70%. Add domain rules with a test, or the build fails.
 - **Never hand-edit `internal/store/`.** It is generated. CI fails if it is stale.
 - - Frontend mutations use **server actions** (`'use server'`) that fetch the Go API, then
   `redirect(...?success=...|error=...)`; `components/ToastAlert.tsx` renders those query params.

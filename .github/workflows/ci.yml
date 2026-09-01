@@ -52,8 +52,10 @@ jobs:
       - name: architecture (dependency rule, TRD 4.2)
         run: ./archcheck.sh
 
+      # -short skips the testcontainers integration tests; they get their own
+      # job below so a Docker problem is distinguishable from a logic failure.
       - name: unit tests
-        run: go test ./... -race
+        run: go test ./... -race -short
 
       # sqlc output is generated, so a stale checkout means the code and the
       # queries have silently diverged.
@@ -66,6 +68,42 @@ jobs:
             git diff --stat -- internal/store
             exit 1
           fi
+
+  # Integration tests + coverage gates (WI-29). Separate from the unit job so a
+  # Docker or container-pull problem reads as an infrastructure failure rather
+  # than as broken code — and so the fast gates still report when this is slow.
+  backend-integration:
+    name: Backend integration & coverage (WI-29)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      # Pull once, up front: the first testcontainers call would otherwise
+      # absorb the pull time and look like a slow test.
+      - name: Pre-pull postgres image
+        run: docker pull postgres:18
+
+      # Runs the real schema against real PostgreSQL 18 through testcontainers:
+      # row locks, partial unique indexes, enum types and CHECK constraints are
+      # half of what this system relies on, and none of them exist in a mock.
+      - name: Integration tests
+        run: go test ./... -race
+        env:
+          CI: "true"
+
+      # domain >= 90%, service >= 70% (IMPLEMENTATION_PLAN §4.1).
+      # Verified non-vacuous: raising a threshold above actual coverage exits 1.
+      - name: Coverage gates
+        run: ./coverage.sh
+        env:
+          CI: "true"
 
   frontend:
     name: Frontend (Next.js)

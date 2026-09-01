@@ -167,3 +167,19 @@ instead of reading it**. The rule already existed for columns and constraints; i
 *values* too. One `\dT+` or `pg_enum` query is cheaper than one failed insert, every time. Corollary
 learned here: a generic 500 message is right for the client and useless for the developer, so when
 a write fails, read the *server* log before re-reading your own code.
+
+### 2026-09-02 — Age arithmetic that disagreed with the database (found by WI-29)
+**Cause:** `domain.AgeYears` decided whether a birthday had passed by comparing `on.YearDay() <
+dob.YearDay()`. A leap day between the two dates shifts YearDay by one, so someone born 2000-06-15
+reads as 25 on 2026-06-15 — the day they turn 26.
+**Course:** **latent, not live** — nothing calls `AgeYears` yet; the eligibility band is currently
+computed only by the `donor_eligibility` view. It would have surfaced when `WI-25`/`WI-26` wire the
+Go eligibility domain, as Go and SQL disagreeing about the same donor, on a birthday, at exactly
+the age boundary the policy cares about (`donor_age_years` min 18). The function's own docstring
+claimed the two agree.
+**Solution:** compare calendar month and day. Added `TestAgeYearsAgreesWithPostgres`, which checks
+Go against `EXTRACT(YEAR FROM age(...))` over 84 date pairs loaded with leap years and Feb 29.
+**Prevention:** when the same quantity is computed in two places, **test them against each other**,
+not each against a hand-written expectation — a shared misunderstanding passes two separate unit
+tests happily. And date arithmetic on day-of-year is wrong across year boundaries: compare
+month/day, or use a library that does.

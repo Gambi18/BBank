@@ -47,7 +47,7 @@ the legacy scope; it will be rebaselined against the new scope at the `WI-06` bo
 | Auth & Security          |  93%   | **ES256 JWT + rotating refresh** (`WI-17`) now **verified on every request**, with the full TRD §7.6 permission matrix and §7.7 ownership enforced as middleware (`WI-20`). Ownership comes from the `sub`/`cid`/`hid` claims — never from a query parameter. **The frontend now verifies the same token** (`WI-19`): `proxy.ts` on the Edge runtime, server components on Node, one `jose` module for both. TODO: remove the hardcoded admin (`WI-18`) |
 | Data model / DB          |  97%   | **Schema complete.** Migrations `000000`–`000016` verified `up → down -all → up` on a fresh database: 26 tables, 21 enums, 4 views, 82 indexes, 18 triggers, 43 FKs, 14 policy rows, plus `000016` `idempotency_keys` (`WI-21`). Remaining: drop-legacy-donors, deliberately deferred to `WI-37` |
 | DevOps / Docker          |  92%   | + golang-migrate, `migrate` compose service, env-injected secrets, server timeouts, graceful shutdown, structured logs, `/healthz` + `/readyz` |
-| Testing                  |  31%   | CI skeleton (gofmt, vet, build, golangci-lint, govulncheck, tsc, eslint, npm audit, gitleaks, migrate up/down/up). Unit tests for the domain (ABO, blood groups, seed cross-check, RBAC matrix + transitions) and the authorization middleware — **all 660 matrix cells asserted over HTTP, granted and denied**. `WI-21` adds the legacy-path rewrite table, the runtime shim toggle, pagination clamping, and idempotency replay/reuse/in-flight/5xx-release. `WI-22` adds the donation-request state machine and the FR-09 rejection vocabulary — including a test asserting no reason describes the *person* rather than the request. All without a database. Still no service, handler or E2E tests — `WI-29` |
+| Testing                  |  55%   | CI skeleton (gofmt, vet, build, golangci-lint, govulncheck, tsc, eslint, npm audit, gitleaks, migrate up/down/up). Unit tests for the domain (ABO, blood groups, seed cross-check, RBAC matrix + transitions) and the authorization middleware — **all 660 matrix cells asserted over HTTP, granted and denied**. `WI-21` adds the legacy-path rewrite table, the runtime shim toggle, pagination clamping, and idempotency replay/reuse/in-flight/5xx-release. `WI-22` adds the donation-request state machine and the FR-09 rejection vocabulary — including a test asserting no reason describes the *person* rather than the request. **`WI-29` adds the integration harness**: real PostgreSQL 18 via `testcontainers`, migrations applied with the same `golang-migrate` production uses, **34 tests** covering the approve/reject lifecycle, genuine concurrency (8 simultaneous approvals → exactly one appointment), refresh-token reuse revoking a family, idempotency claim/replay/release, and the legacy `requests` → `donation_requests` migration against a fixture containing the rows the old `confirm` deleted. Coverage gated in CI: **domain 99% (gate 90%), service 72% (gate 70%)**, verified non-vacuous. Still no handler-level or browser E2E tests — `WI-30` |
 | Documentation            |  90%   | Full planning set (8,100+ lines): PRD, TRD, User Journey, UI/UX Brief, DB Schema, Implementation Plan — all cross-referenced by FR/NFR/WI ID |
 
 ### Planning documents (added 2026-09-01)
@@ -123,7 +123,10 @@ schema doc; route paths by the user journey. Other documents cite, never redefin
 - [x] Silent access-token refresh with rotation, and a loop guard (`WI-19`)
 - [x] First automated tests (domain: ABO compatibility, blood-group parsing, seed cross-check)
 - [x] Architecture dependency rule enforced in CI (`archcheck.sh`)
-- [ ] Automated tests (service, handler, E2E)
+- [x] Integration harness: real Postgres 18 + real migrations (`WI-29`)
+- [x] Coverage gates in CI — domain ≥ 90%, service ≥ 70% (`WI-29`)
+- [x] Concurrency proven, not assumed: simultaneous approvals, duplicate signups, key claims
+- [ ] Automated tests (handler, browser E2E) — `WI-30`
 - [x] CI skeleton (lint, vet, build, vuln + secret scan, migrations up/down/up)
 - [x] Database migrations (`golang-migrate`; boot-time DDL removed)
 - [x] CORS locked to an allowlist
@@ -211,10 +214,11 @@ _Resolved since this list was written:_ open CORS (now an explicit allowlist wit
    `WI-22` gave every role something to do, but there is still no supported way to create the first
    admin — or any `staff`, `lab_tech` or `hospital_user` account. Five of the six roles the guard
    understands can currently only be created with hand-written SQL.
-2. **`WI-30` — the Phase 1 safety regression suite.** `WI-19`, `WI-21` and `WI-22` were each
-   verified by hand against a live stack. That is three consecutive work items whose evidence lives
-   in a changelog rather than in CI, and it is now **the largest risk in the project**: nothing
-   would fail if someone reintroduced any of the defects those sessions closed.
+2. **`WI-30` — the rest of the Phase 1 safety regression suite.** `WI-29` closed the larger half
+   of this: the service layer, the auth lifecycle and the migration path now fail in CI rather than
+   in a changelog. What is still only manually verified is the **HTTP layer** — the six-role route
+   matrix, token tampering, the deprecation shim toggle — plus browser journeys. `FR-19` deferral
+   enforcement cannot be covered until `WI-26` exists.
 3. `WI-23` — appointment reschedule/cancel and the daily no-show sweep.
 4. `WI-31` — admin donor edit/delete and the user console (`/admin/users`).
 5. `WI-77` — turn idempotency from recorded to **required** on the endpoints §6.5 marks `Idem`.
@@ -223,6 +227,50 @@ _Resolved since this list was written:_ open CORS (now an explicit allowlist wit
 ---
 
 ## Changelog
+- **2026-09-02** — **`WI-29` complete: the test harness, and the first defect it caught.**
+  Integration tests now run against **real PostgreSQL 18** through `testcontainers`, with the
+  schema built by the same `golang-migrate` and the same migration files the `migrate` compose
+  service uses — so "the schema the tests ran against" and "the schema production gets" are one
+  artefact rather than two that agree until they don't.
+  **A mock could not have tested any of this.** Half of what this system relies on *is* the
+  database: partial unique indexes, CHECK constraints, enum types, `FOR UPDATE` row locks,
+  `ON CONFLICT DO NOTHING`. A mocked test of the approval race proves nothing about the property it
+  claims to test, because the property belongs to Postgres.
+  **The concurrency claims are now proven rather than asserted.** Eight goroutines approving one
+  request produce **exactly one appointment** and seven clean 409s; six concurrent signups on one
+  email produce one account and five conflicts; ten simultaneous idempotency claims leave exactly
+  one holder. Each of these was previously a comment explaining why the code was correct.
+  **The migration test the plan asked for.** `WI-29`'s acceptance criteria call for the
+  `requests` → `donation_requests` migration to be tested "against a fixture including the rows the
+  old `confirm` deleted". It now is: a database is stood up at the baseline schema, seeded with a
+  live request, an appointment linked to it, and **an appointment orphaned by a delete that already
+  happened** — then migrated forward. The test asserts both appointments survive, the orphan keeps a
+  NULL link rather than a dangling one, and the loss is **recorded in `migration_rejects`**, because
+  a quarantine table nobody writes to is the same as no quarantine table.
+  **Auth is tested at the service layer for the first time.** Refresh-token reuse revoking the
+  entire family — the security property `WI-17` built and only ever checked by hand — is now a
+  named test, along with `token_version` invalidating live access tokens, logout revocation, and
+  login refusing to distinguish "wrong password" from "no such account" (`NFR-12`).
+  **The defect it caught, honestly scoped:** `domain.AgeYears` decided whether a birthday had
+  passed by comparing `YearDay()`, which is off by one whenever a leap day falls between the two
+  dates — someone born 2000-06-15 read as 25 on the day they turned 26. It is **latent, not live**:
+  nothing calls `AgeYears` yet, because the eligibility band is currently computed only by the
+  `donor_eligibility` view. It would have surfaced when `WI-25`/`WI-26` wire the Go eligibility
+  domain, as Go and SQL disagreeing about one donor, on a birthday, at exactly the 18-year boundary
+  the policy cares about. Fixed, and `TestAgeYearsAgreesWithPostgres` now checks Go against
+  `EXTRACT(YEAR FROM age(...))` across 84 date pairs — testing the two implementations against
+  *each other* rather than each against a hand-written expectation, which a shared misunderstanding
+  would pass.
+  **Coverage is gated, and the gate has been seen to fail.** `backend/coverage.sh` enforces
+  `internal/domain` ≥ 90% (now 99%) and `internal/service` ≥ 70% (now 72%), measured per package
+  with `-coverpkg` pointed at itself — a repo-wide `-coverpkg` spreads every package's statements
+  across every profile and collapses each number to a fraction of the truth. Raising a threshold
+  above actual coverage was confirmed to exit 1, following this repo's rule that a gate you have
+  not watched fail is not known to work. `internal/store` and `internal/http` are deliberately
+  ungated: generated code and wiring, where a threshold buys tests written to move a number.
+  **CI runs them as a separate job** so a Docker or image-pull problem reads as infrastructure
+  rather than as broken code, and `go test -short` still passes with no Docker at all, which keeps
+  the fast gates usable on a laptop.
 - **2026-09-02** — **`WI-22` complete: `internal/legacy` is deleted, and every switched-off write
   path is live again.**
   The strangler finished. Donation requests and appointments moved into

@@ -80,10 +80,19 @@ func ParseRhesus(s string) (Rhesus, error) {
 }
 
 // AgeYears returns completed years at `on`. Used for the eligibility age band;
-// the database computes the same thing in donor_eligibility, and the two must agree.
+// the database computes the same thing in `donor_eligibility` as
+// `EXTRACT(YEAR FROM age(CURRENT_DATE, date_of_birth))`, and the two must agree.
+//
+// The comparison is on calendar month and day, NOT on YearDay. Comparing
+// YearDay is wrong whenever a leap day falls between the two dates: someone born
+// 2000-06-15 (day 167 of a leap year) reads as day 166 on 2026-06-15, so their
+// birthday looks like it has not happened yet and the function returns 25 on the
+// day they turn 26. With a minimum donor age of 18 (`donor_age_years` policy),
+// that is a donor refused on their eighteenth birthday by Go while the view says
+// they are eligible — two components disagreeing about the same person.
 func AgeYears(dob time.Time, on time.Time) int {
 	years := on.Year() - dob.Year()
-	if on.YearDay() < dob.YearDay() {
+	if on.Month() < dob.Month() || (on.Month() == dob.Month() && on.Day() < dob.Day()) {
 		years--
 	}
 	return years
