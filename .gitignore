@@ -27,3 +27,6 @@ backend/bbank
 
 # Scratch file from a one-off check.
 .tmpcheck
+
+# Stray scratch output from ad-hoc `curl -o` during manual verification.
+/b

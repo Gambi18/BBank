@@ -44,7 +44,7 @@ the legacy scope; it will be rebaselined against the new scope at the `WI-06` bo
 |--------------------------|:------:|-------|
 | Backend API (CRUD)       |  96%   | **`internal/legacy` is deleted — the strangler finished** (`WI-22`). Every endpoint is layered (`cmd/api`, `internal/{domain,service,store,http}`), with one pgx pool instead of two. Approving a request is now a **status transition, not a DELETE**. `WI-21`: `/api/v1` is canonical and enveloped, `/api/go` is a rewriting alias with `Deprecation`/`Sunset`, list endpoints are bounded, and idempotency storage is live |
 | Frontend UI / pages      |  97%   | Design refinement pass: Outfit font, tinted shadows, grain overlay, staggered layouts, richer empty/loading states, custom 404, legal pages, OG meta, skip-to-content. `WI-22` restored every switched-off write path — signup (with auto-login), donor profile edit, admin add-donor — and added the reject UI, whose reason list is **read from the API** rather than hardcoded. Four role areas (`/staff`, `/lab`, `/inventory`, `/hospital`) are honest placeholders |
-| Auth & Security          |  93%   | **ES256 JWT + rotating refresh** (`WI-17`) now **verified on every request**, with the full TRD §7.6 permission matrix and §7.7 ownership enforced as middleware (`WI-20`). Ownership comes from the `sub`/`cid`/`hid` claims — never from a query parameter. **The frontend now verifies the same token** (`WI-19`): `proxy.ts` on the Edge runtime, server components on Node, one `jose` module for both. TODO: remove the hardcoded admin (`WI-18`) |
+| Auth & Security          |  97%   | **ES256 JWT + rotating refresh** (`WI-17`) now **verified on every request**, with the full TRD §7.6 permission matrix and §7.7 ownership enforced as middleware (`WI-20`). Ownership comes from the `sub`/`cid`/`hid` claims — never from a query parameter. **The frontend now verifies the same token** (`WI-19`): `proxy.ts` on the Edge runtime, server components on Node, one `jose` module for both. **`WI-18` closes the last credential gap**: the first admin is bootstrapped from an env-supplied one-time *invitation*, never a literal, and invite / suspend / reactivate / role-change are live. A suspended account stops working on its **next request** — verified over HTTP with a live token |
 | Data model / DB          |  97%   | **Schema complete.** Migrations `000000`–`000016` verified `up → down -all → up` on a fresh database: 26 tables, 21 enums, 4 views, 82 indexes, 18 triggers, 43 FKs, 14 policy rows, plus `000016` `idempotency_keys` (`WI-21`). Remaining: drop-legacy-donors, deliberately deferred to `WI-37` |
 | DevOps / Docker          |  92%   | + golang-migrate, `migrate` compose service, env-injected secrets, server timeouts, graceful shutdown, structured logs, `/healthz` + `/readyz` |
 | Testing                  |  55%   | CI skeleton (gofmt, vet, build, golangci-lint, govulncheck, tsc, eslint, npm audit, gitleaks, migrate up/down/up). Unit tests for the domain (ABO, blood groups, seed cross-check, RBAC matrix + transitions) and the authorization middleware — **all 660 matrix cells asserted over HTTP, granted and denied**. `WI-21` adds the legacy-path rewrite table, the runtime shim toggle, pagination clamping, and idempotency replay/reuse/in-flight/5xx-release. `WI-22` adds the donation-request state machine and the FR-09 rejection vocabulary — including a test asserting no reason describes the *person* rather than the request. **`WI-29` adds the integration harness**: real PostgreSQL 18 via `testcontainers`, migrations applied with the same `golang-migrate` production uses, **34 tests** covering the approve/reject lifecycle, genuine concurrency (8 simultaneous approvals → exactly one appointment), refresh-token reuse revoking a family, idempotency claim/replay/release, and the legacy `requests` → `donation_requests` migration against a fixture containing the rows the old `confirm` deleted. Coverage gated in CI: **domain 99% (gate 90%), service 72% (gate 70%)**, verified non-vacuous. Still no handler-level or browser E2E tests — `WI-30` |
@@ -125,6 +125,8 @@ schema doc; route paths by the user journey. Other documents cite, never redefin
 - [x] Architecture dependency rule enforced in CI (`archcheck.sh`)
 - [x] Integration harness: real Postgres 18 + real migrations (`WI-29`)
 - [x] Coverage gates in CI — domain ≥ 90%, service ≥ 70% (`WI-29`)
+- [x] No credential literal anywhere; first admin bootstrapped by invitation (`WI-18`)
+- [x] Invite / suspend / reactivate / change role, with a last-admin guard (`WI-18`)
 - [x] Concurrency proven, not assumed: simultaneous approvals, duplicate signups, key claims
 - [ ] Automated tests (handler, browser E2E) — `WI-30`
 - [x] CI skeleton (lint, vet, build, vuln + secret scan, migrations up/down/up)
@@ -193,12 +195,11 @@ All four P0 findings below are fixed and covered by an acceptance check. Origina
   Sign-out is now a route handler *inside* that path, and revocation is asserted in the database.
 
 ### P1 — Remaining
-1. **Admin is still a hardcoded credential** in the login server action (`WI-18`).
-   _Fix:_ bootstrap the first admin from a one-time invite; add invite / suspend / role-change.
-   The credential no longer *works* — only the API can sign a session (`WI-17`/`WI-19`) — but the
-   literal is still in the source and there is still no supported way to create the first admin.
-2. **No appointment reschedule or cancel** (`WI-23`). Donation requests can now be cancelled and
+1. **No appointment reschedule or cancel** (`WI-23`). Donation requests can now be cancelled and
    rejected (`WI-22`); appointments still cannot be moved or called off once scheduled.
+2. **Invitations are not emailed** (`WI-79`). The one-time link is returned to the inviting admin
+   to pass on by hand. A deliberate stopping point: inventing a mail path here would be a second,
+   unaudited way to send credentials.
 
 _Resolved since this list was written:_ open CORS (now an explicit allowlist with `Vary: Origin`).
 
@@ -210,23 +211,66 @@ _Resolved since this list was written:_ open CORS (now an explicit allowlist wit
 
 ## Suggested Next Steps (sequenced)
 
-1. **`WI-18` — remove the hardcoded admin; invite / suspend / role-change.** Now the top item.
-   `WI-22` gave every role something to do, but there is still no supported way to create the first
-   admin — or any `staff`, `lab_tech` or `hospital_user` account. Five of the six roles the guard
-   understands can currently only be created with hand-written SQL.
-2. **`WI-30` — the rest of the Phase 1 safety regression suite.** `WI-29` closed the larger half
+1. **`WI-30` — the rest of the Phase 1 safety regression suite.** `WI-29` closed the larger half
    of this: the service layer, the auth lifecycle and the migration path now fail in CI rather than
    in a changelog. What is still only manually verified is the **HTTP layer** — the six-role route
    matrix, token tampering, the deprecation shim toggle — plus browser journeys. `FR-19` deferral
    enforcement cannot be covered until `WI-26` exists.
-3. `WI-23` — appointment reschedule/cancel and the daily no-show sweep.
-4. `WI-31` — admin donor edit/delete and the user console (`/admin/users`).
+2. `WI-23` — appointment reschedule/cancel and the daily no-show sweep.
+3. `WI-31` — admin donor edit/delete, password resets, and a confirmation dialog on destructive
+   actions. `WI-18` shipped the operational minimum of `/admin/users`; this makes it complete.
+4. `WI-25`/`WI-26` — the policy resolver and the `FR-19` deferral gate. These are the two that
+   unblock the clinical spine, and `AgeYears` (fixed in `WI-29`) is waiting for them.
 5. `WI-77` — turn idempotency from recorded to **required** on the endpoints §6.5 marks `Idem`.
    The storage and replay path landed in `WI-21`; only the `required` flag is left.
+6. `WI-79` — email the invitation instead of handing the admin a link to copy.
 
 ---
 
 ## Changelog
+- **2026-09-02** — **`WI-18` complete: the hardcoded admin is gone, and there is a supported way to
+  create every role.**
+  The credential literal stopped *working* at `WI-17`, when a session became something only the API
+  can sign. What remained was worse than cosmetic: five of the six roles could be created only with
+  hand-written SQL, so the honest options were a backdoor or a DBA. This is the third one.
+  **The first admin is an invitation, not a password.** `BOOTSTRAP_ADMIN_EMAIL` creates the account
+  with **no password anyone knows** and prints a one-time token to the startup log — and only when
+  no active admin exists, so leaving the variable set re-opens nothing on later boots. Verified
+  both ways against the running stack: with an admin present it logs "skipping"; with none it
+  minted an invitation, the account refused login until accepted (403), accepting it worked (204),
+  replaying the token failed (400), and the new admin then logged in.
+  **An invited account has a password nobody knows, not a placeholder.** `users.password_hash` has
+  a CHECK requiring bcrypt/argon2 shape, so a sentinel string is impossible — and a *shared*
+  sentinel would be a backdoor into every invitation that is never completed. Each one gets a
+  discarded random 32-byte secret. Only the SHA-256 of the invite token is stored, as with refresh
+  tokens (`WI-17`), so a database disclosure hands over nothing usable.
+  **The user row is created at invite time, not at acceptance.** Email collisions surface in front
+  of the admin sending the invitation rather than later; an invited-but-not-joined account is
+  visible in the console, so "did I invite them?" is answerable; and the role/centre CHECK is
+  validated immediately, so `staff` with no centre is a **422 naming the field** instead of a
+  constraint violation reaching the caller as a 500.
+  **The FR-66 criterion, verified over HTTP with a live token:** an admin suspends a staff account,
+  and that account's *existing, unexpired* access token returns **401 on its very next request** —
+  not at its next login. Two things make it true: `VerifyAccessToken` re-reads status on every
+  request, and `SetStatus` bumps `token_version` and revokes the refresh families, so there is
+  nothing left to refresh into. Role changes do the same, because the role is baked into the signed
+  token and a demoted admin must not keep admin authority until it expires.
+  **Two guards on the operation that can lock everybody out.** The last active admin cannot be
+  suspended or demoted, and no admin can suspend or demote *themselves* — recovering from either
+  needs another admin, and there is no path back from zero short of SQL.
+  **Frontend:** a public `/accept-invite` page where an invitee sets their own password, and
+  `/admin/users` — list with role/status/search filters, invite, suspend, reactivate, change role.
+  `WI-31` adds password resets and a confirmation dialog; this is the operational minimum.
+  Verified in the browser end to end: an admin invited a `lab_tech`, the invitee set a password
+  from the emailed-style link, logged in, landed on `/lab`, and was redirected away from `/admin`,
+  `/admin/users`, `/staff` and `/inventory`.
+  **The coverage gate did its job.** Adding `UserService` dropped `internal/service` to 68.6% and
+  CI would have failed; the missing list/bootstrap tests brought it to 74.1%. That is the gate
+  working as designed rather than a number being massaged — `WI-29` built it two commits ago and it
+  caught the very next change.
+  Also fixed while in the console: the new page used `badge-success`/`badge-danger`, which do not
+  exist in `globals.css` (the defined variants are `badge-green`, `badge-accent`, `badge-muted`).
+  An undefined utility class renders as unstyled text — the trap `CLAUDE.md` warns about.
 - **2026-09-02** — **`WI-29` complete: the test harness, and the first defect it caught.**
   Integration tests now run against **real PostgreSQL 18** through `testcontainers`, with the
   schema built by the same `golang-migrate` and the same migration files the `migrate` compose

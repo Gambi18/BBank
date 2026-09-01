@@ -104,6 +104,11 @@ through `src/lib/api.ts` (`API_BASE_URL`, set to `http://goapp:8000` in compose)
   the migration path itself. Docker is required — `go test -short ./...` skips them.
 - **Coverage is gated**: `backend/coverage.sh` (also a CI job) enforces `internal/domain` ≥ 90% and
   `internal/service` ≥ 70%. Add domain rules with a test, or the build fails.
+- **There is no credential literal, and there must never be one again** (`WI-18`). The first admin
+  comes from `BOOTSTRAP_ADMIN_EMAIL`, which creates a one-time *invitation* — no password — and
+  only when no active admin exists. Everyone else is invited via `POST /api/v1/users`. Suspending
+  or changing a role bumps `token_version` and revokes the refresh families, so it takes effect on
+  the **next request**, not the next login (`FR-66`).
 - **Never hand-edit `internal/store/`.** It is generated. CI fails if it is stale.
 - - Frontend mutations use **server actions** (`'use server'`) that fetch the Go API, then
   `redirect(...?success=...|error=...)`; `components/ToastAlert.tsx` renders those query params.

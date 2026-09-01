@@ -16,8 +16,11 @@ import (
 	"syscall"
 	"time"
 
+	"bbank/internal/domain"
 	bbhttp "bbank/internal/http"
 	"bbank/internal/platform"
+	"bbank/internal/service"
+	"bbank/internal/store"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -88,6 +91,11 @@ func main() {
 	flags := platform.NewFlags(cfg.LegacyShim)
 	logger.Info("legacy /api/go shim", "enabled", flags.LegacyShim())
 
+	// WI-18: create the first admin as an INVITATION, never as a credential.
+	// No-op unless BOOTSTRAP_ADMIN_EMAIL is set and no active admin exists, so
+	// leaving the variable in a deployment re-opens nothing.
+	bootstrapAdmin(context.Background(), logger, pool, signer, cfg)
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           bbhttp.NewRouter(bbhttp.Deps{Cfg: cfg, Pool: pool, Signer: signer, Flags: flags}),
@@ -119,4 +127,55 @@ func main() {
 	}
 	<-shutdownDone
 	logger.Info("shutdown complete")
+}
+
+// bootstrapAdmin turns an environment-supplied email into a one-time invitation
+// for the first admin.
+//
+// It replaces the hardcoded `admin@admin.com / admin` credential (TD-02). The
+// difference that matters: a literal is a permanent way in, whereas this
+// creates an account with **no password**, an expiring single-use token, and
+// only when the deployment has nobody who could otherwise do it.
+//
+// Failures here are logged, never fatal. A deployment that cannot bootstrap
+// should still start and serve — refusing to boot would turn a convenience into
+// an outage.
+func bootstrapAdmin(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool, signer *platform.Signer, cfg platform.Config) {
+	if cfg.BootstrapAdminEmail == "" {
+		return
+	}
+	q := store.New(pool)
+	users := service.NewUserService(pool, q, service.NewAuthService(q, signer))
+
+	has, err := users.HasActiveAdmin(ctx)
+	if err != nil {
+		logger.Error("bootstrap: cannot check for an existing admin", "error", err)
+		return
+	}
+	if has {
+		logger.Info("bootstrap: an active admin already exists; skipping",
+			"env", platform.BootstrapEnvVar)
+		return
+	}
+
+	id, token, err := users.Invite(ctx, service.InviteParams{
+		Email: cfg.BootstrapAdminEmail,
+		Role:  string(domain.RoleAdmin),
+	})
+	if err != nil {
+		logger.Error("bootstrap: could not create the first admin invitation",
+			"email", cfg.BootstrapAdminEmail, "error", err)
+		return
+	}
+
+	// The token is printed once, here, for whoever is performing the
+	// deployment. It is not stored in recoverable form and cannot be reissued —
+	// a lost one is replaced by inviting again, not by looking it up.
+	logger.Warn("bootstrap: FIRST ADMIN INVITATION CREATED — use this token once, then it is gone",
+		"user_id", id,
+		"email", cfg.BootstrapAdminEmail,
+		"accept_endpoint", "POST /api/v1/invites/accept",
+		"invite_token", token,
+		"expires_in_days", int(service.InviteTTL.Hours()/24),
+	)
 }

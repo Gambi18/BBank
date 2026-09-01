@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
-    FaDroplet, FaGaugeHigh, FaCalendarCheck, FaInbox, FaUsers,
+    FaDroplet, FaGaugeHigh, FaCalendarCheck, FaInbox, FaUsers, FaUserShield,
     FaGear, FaArrowRightFromBracket, FaUser,
 } from 'react-icons/fa6'
 import { LOGOUT_ACTION } from '@/lib/routes'
@@ -20,6 +20,7 @@ export default function SidebarNav({ role, donorId }: { role: 'admin' | 'donor';
                   { href: '/admin/appointments', label: 'Appointments', icon: FaCalendarCheck },
                   { href: '/admin/requests', label: 'Requests', icon: FaInbox },
                   { href: '/admin/donors', label: 'Donors', icon: FaUsers },
+                  { href: '/admin/users', label: 'Users', icon: FaUserShield },
               ]
             : [{ href: `/donor/${donorId}`, label: 'My profile', icon: FaUser }]
 

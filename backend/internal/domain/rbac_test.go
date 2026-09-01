@@ -1,6 +1,9 @@
 package domain
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // The structural invariants from TRD §7.6. These are the rules that, if broken,
 // are not "a permissions bug" but a compliance failure.
@@ -238,5 +241,80 @@ func TestTransitionKeepsTheMatrixScope(t *testing.T) {
 	}
 	if s, _ := CanExecute(RoleHospitalUser, "blood_requests", "cancel"); s != ScopeHospital {
 		t.Errorf("hospital_user cancellation scope = %q, want %q", s, ScopeHospital)
+	}
+}
+
+func TestParseRole(t *testing.T) {
+	for in, want := range map[string]Role{
+		"donor": RoleDonor, "STAFF": RoleStaff, " lab_tech ": RoleLabTech,
+		"inventory_manager": RoleInventoryManager, "hospital_user": RoleHospitalUser,
+		"admin": RoleAdmin, "Admin ": RoleAdmin,
+	} {
+		got, err := ParseRole(in)
+		if err != nil || got != want {
+			t.Errorf("ParseRole(%q) = (%q, %v), want %q", in, got, err, want)
+		}
+	}
+
+	// An unrecognised role is not "a new role with no rules yet": the matrix
+	// denies what it does not know, so accepting one would create an account
+	// that authenticates and can do nothing.
+	for _, in := range []string{"", "   ", "superuser", "phlebotomist", "root", "admin;--", "super admin"} {
+		if _, err := ParseRole(in); !errors.Is(err, ErrUnknownRole) {
+			t.Errorf("ParseRole(%q) was accepted", in)
+		}
+	}
+}
+
+// The role/scope pairing, which the database also enforces
+// (`users_center_matches_role`). Duplicated so the caller gets a 422 naming the
+// field rather than a 500 about a CHECK constraint.
+func TestValidateRoleScope(t *testing.T) {
+	center := int64(1)
+	hospital := int64(2)
+
+	ok := []struct {
+		name     string
+		role     Role
+		center   *int64
+		hospital *int64
+	}{
+		{"staff at a centre", RoleStaff, &center, nil},
+		{"donor with nothing", RoleDonor, nil, nil},
+		{"admin with nothing", RoleAdmin, nil, nil},
+		{"hospital user at a hospital", RoleHospitalUser, nil, &hospital},
+		// Optional for these two: they may be homed at a centre or float.
+		{"lab tech unhomed", RoleLabTech, nil, nil},
+		{"lab tech at a centre", RoleLabTech, &center, nil},
+		{"inventory manager at a centre", RoleInventoryManager, &center, nil},
+	}
+	for _, c := range ok {
+		if err := ValidateRoleScope(c.role, c.center, c.hospital); err != nil {
+			t.Errorf("%s should be allowed: %v", c.name, err)
+		}
+	}
+
+	bad := []struct {
+		name     string
+		role     Role
+		center   *int64
+		hospital *int64
+		want     error
+	}{
+		// A staff account with no centre is scoped to nothing and can see
+		// nothing — which reads as an RBAC bug and is really a missing
+		// assignment. Migration 000015 exists because of exactly this.
+		{"staff with no centre", RoleStaff, nil, nil, ErrCenterNeeded},
+		{"donor at a centre", RoleDonor, &center, nil, ErrCenterUnused},
+		{"admin at a centre", RoleAdmin, &center, nil, ErrCenterUnused},
+		{"hospital user at a centre", RoleHospitalUser, &center, &hospital, ErrCenterUnused},
+		{"hospital user with no hospital", RoleHospitalUser, nil, nil, ErrHospNeeded},
+		{"staff at a hospital", RoleStaff, &center, &hospital, ErrHospUnused},
+		{"donor at a hospital", RoleDonor, nil, &hospital, ErrHospUnused},
+	}
+	for _, c := range bad {
+		if err := ValidateRoleScope(c.role, c.center, c.hospital); !errors.Is(err, c.want) {
+			t.Errorf("%s = %v, want %v", c.name, err, c.want)
+		}
 	}
 }

@@ -1,6 +1,10 @@
 package domain
 
-import "strings"
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
 
 // The RBAC permission matrix from TRD §7.6, expressed as data rather than as
 // scattered `if role == "admin"` checks.
@@ -262,4 +266,60 @@ func NamedTransitions(resource string) []string {
 		out = append(out, t)
 	}
 	return out
+}
+
+var (
+	ErrUnknownRole  = errors.New("role must be one of donor, staff, lab_tech, inventory_manager, hospital_user, admin")
+	ErrCenterNeeded = errors.New("staff must be assigned to a donation centre")
+	ErrCenterUnused = errors.New("that role must not be assigned to a donation centre")
+	ErrHospNeeded   = errors.New("a hospital user must be assigned to exactly one hospital")
+	ErrHospUnused   = errors.New("that role must not be assigned to a hospital")
+)
+
+// ParseRole turns caller-supplied text into a Role, or refuses.
+//
+// An unrecognised role is never "a new role with no rules yet" — the matrix
+// denies what it does not know (WI-20), so accepting one would create an
+// account that can authenticate and do nothing, which reads as a broken system
+// rather than a rejected input.
+func ParseRole(s string) (Role, error) {
+	r := Role(strings.ToLower(strings.TrimSpace(s)))
+	if !r.Valid() {
+		return "", fmt.Errorf("%w: got %q", ErrUnknownRole, s)
+	}
+	return r, nil
+}
+
+// ValidateRoleScope enforces the role/scope pairing in front of the caller.
+//
+// The database enforces the same thing (`users_center_matches_role`), and the
+// duplication is deliberate: a constraint violation is a 500 with a message
+// about a CHECK, while this is a 422 that names the field and says what to do.
+//
+// The asymmetry is real, not an oversight. `staff` are centre-scoped in every
+// grant they hold, so a staff account with no centre can see nothing at all —
+// which looks like an RBAC bug and is really a missing assignment (that exact
+// confusion is why migration 000015 exists). `lab_tech` and `inventory_manager`
+// may optionally be homed at a centre; donors, admins and hospital users must
+// not be.
+func ValidateRoleScope(r Role, centerID, hospitalID *int64) error {
+	switch r {
+	case RoleStaff:
+		if centerID == nil {
+			return ErrCenterNeeded
+		}
+	case RoleDonor, RoleAdmin, RoleHospitalUser:
+		if centerID != nil {
+			return ErrCenterUnused
+		}
+	}
+
+	if r == RoleHospitalUser {
+		if hospitalID == nil {
+			return ErrHospNeeded
+		}
+	} else if hospitalID != nil {
+		return ErrHospUnused
+	}
+	return nil
 }

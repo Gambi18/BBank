@@ -103,6 +103,14 @@ func NewRouter(d Deps) http.Handler {
 	r.Mount("/api/v1/appointments",
 		handlers.NewAppointmentHandler(service.NewAppointmentService(q)).Routes())
 
+	// User administration (WI-18). `users` is a resource in the §7.6 matrix, so
+	// it is gated there rather than by RequireRole.
+	users := handlers.NewUserHandler(service.NewUserService(d.Pool, q, authSvc), idem)
+	r.Mount("/api/v1/users", users.Routes())
+	// Accepting an invitation is necessarily anonymous: the invitee has no
+	// session, which is the whole point of the invitation.
+	r.Mount("/api/v1/invites", users.PublicRoutes())
+
 	// Operational, not clinical: gated on the admin role directly rather than on
 	// the §7.6 matrix, which owns domain resources and denies unknown ones.
 	r.Mount("/api/v1/admin/flags", handlers.NewFlagHandler(d.Flags).Routes())

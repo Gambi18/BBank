@@ -1433,3 +1433,14 @@ type User struct {
 	// Home donation centre. Signed into the access token as the `cid` claim (TRD §7.3) and used by the RBAC middleware as the mandatory WHERE clause for every ctr-scoped grant (§7.6).
 	CenterID *int64
 }
+
+// FR-66 invitations. One live invite per user is enforced by user_invites_one_open_idx; the token is stored only as a SHA-256 hash and shown once.
+type UserInvite struct {
+	ID         int64
+	UserID     int64
+	TokenHash  []byte
+	InvitedBy  *int64
+	CreatedAt  pgtype.Timestamptz
+	ExpiresAt  pgtype.Timestamptz
+	AcceptedAt pgtype.Timestamptz
+}

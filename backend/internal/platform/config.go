@@ -27,6 +27,10 @@ type Config struct {
 	AllowEphemeralKey bool // dev only: generate a key if none is supplied
 	CookieSecure      bool
 
+	// BootstrapAdminEmail creates the FIRST admin as an invitation, when and
+	// only when no active admin exists (WI-18). See bootstrap.go.
+	BootstrapAdminEmail string
+
 	// LegacyShim seeds the runtime flag of the same name (WI-21). It is only the
 	// STARTING value: the flag is changed at runtime through
 	// PATCH /api/v1/admin/flags, because the whole point of the shim is to be
@@ -65,6 +69,7 @@ func Load() (Config, error) {
 	// Defaults ON: turning it off is a deliberate act, and a deployment that
 	// forgets to set it keeps serving the clients it already has.
 	c.LegacyShim = envOr("LEGACY_API_SHIM", "true") == "true"
+	c.BootstrapAdminEmail = strings.TrimSpace(os.Getenv(BootstrapEnvVar))
 
 	// Refusing to start beats silently signing with a key that dies on restart.
 	if c.JWTPrivateKey == "" && !c.AllowEphemeralKey {

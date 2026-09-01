@@ -183,3 +183,16 @@ Go against `EXTRACT(YEAR FROM age(...))` over 84 date pairs loaded with leap yea
 not each against a hand-written expectation — a shared misunderstanding passes two separate unit
 tests happily. And date arithmetic on day-of-year is wrong across year boundaries: compare
 month/day, or use a library that does.
+
+### 2026-09-02 — Used Tailwind-style badge classes that this project does not define
+**Cause:** the new `/admin/users` console styled account status with `badge-success` and
+`badge-danger` — names that read like a design system but are not in `globals.css`, which defines
+`badge-accent`, `badge-green` and `badge-muted`.
+**Course:** caught by grepping `globals.css` before the browser test, so it never shipped. Had it
+gone out, the status column would have rendered as unstyled text — a silent visual failure, since
+an unknown utility class produces no error anywhere.
+**Solution:** used the defined variants.
+**Prevention:** the trap was already written down in `CLAUDE.md` ("Custom utility classes are
+hand-defined in `src/app/globals.css` — check there before using or renaming one"). Reading the
+rule is not the same as applying it: **grep `globals.css` for any `badge-`/`btn-`/`field-` variant
+before typing it**, the same discipline the enum and column rules demand.

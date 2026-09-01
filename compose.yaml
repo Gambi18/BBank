@@ -53,6 +53,9 @@ services:
       # WI-21: seeds the runtime flag that serves the deprecated /api/go/* paths.
       # Changed live via PATCH /api/v1/admin/flags — this is only the boot value.
       LEGACY_API_SHIM: ${LEGACY_API_SHIM:-true}
+      # WI-18: creates the FIRST admin as a one-time invitation when no active
+      # admin exists. A no-op on every later boot; safe to leave set.
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
       # WI-03: exact origins only. Never "*".
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
       # WI-17: ES256 signing key. No default — the API refuses to start without it.
