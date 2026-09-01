@@ -34,17 +34,17 @@ donation appointments, and an admin confirms them into scheduled appointments.
 the legacy scope; it will be rebaselined against the new scope at the `WI-06` boundary
 (`IMPLEMENTATION_PLAN.md` §3), at which point several percentages deliberately go *down*.
 
-> **The app is mid-migration and does not currently work end-to-end.** As of `WI-20` the API
-> requires a verified token on every `/api/go/*` route, and the frontend still sends the old
-> unsigned `bb_session` cookie, so the donor and admin pages get 401. That is the window the plan
-> sequences between `WI-20` and `WI-19`, not a regression — but the "~77% of legacy scope" figure
-> describes the code, not a running product, until `WI-19` lands.
+> **The app works end-to-end again.** `WI-19` closed the migration window `WI-20` opened: the
+> frontend now sends the ES256 token the API has required since `WI-20`, and the donor and admin
+> pages render real data instead of 401ing. Verified against the running stack — login, the full
+> six-role route matrix, token tampering, refresh rotation and logout revocation (see the
+> changelog entry for the evidence).
 
 | Area                     | Status | Notes |
 |--------------------------|:------:|-------|
 | Backend API (CRUD)       |  89%   | Layered structure live (`cmd/api`, `internal/{domain,service,store,http}`); `donors` served through it with pagination + search; everything else via the shrinking `internal/legacy` shim. Approving a request is now a **status transition, not a DELETE** |
-| Frontend UI / pages      |  97%   | Design refinement pass: Outfit font, tinted shadows, grain overlay, staggered layouts, richer empty/loading states, custom 404, legal pages, OG meta, skip-to-content |
-| Auth & Security          |  90%   | **ES256 JWT + rotating refresh** (`WI-17`) now **verified on every request**, with the full TRD §7.6 permission matrix and §7.7 ownership enforced as middleware (`WI-20`). Ownership comes from the `sub`/`cid`/`hid` claims — never from a query parameter. TODO: remove the hardcoded admin (`WI-18`), frontend session (`WI-19`) |
+| Frontend UI / pages      |  95%   | Design refinement pass: Outfit font, tinted shadows, grain overlay, staggered layouts, richer empty/loading states, custom 404, legal pages, OG meta, skip-to-content. **Down 2 points deliberately** (`WI-19`): signup and donor create/edit now say they are unavailable rather than posting into a 404 — the endpoints went away with `WI-11` and return with `WI-22`. Four role areas (`/staff`, `/lab`, `/inventory`, `/hospital`) are honest placeholders |
+| Auth & Security          |  93%   | **ES256 JWT + rotating refresh** (`WI-17`) now **verified on every request**, with the full TRD §7.6 permission matrix and §7.7 ownership enforced as middleware (`WI-20`). Ownership comes from the `sub`/`cid`/`hid` claims — never from a query parameter. **The frontend now verifies the same token** (`WI-19`): `proxy.ts` on the Edge runtime, server components on Node, one `jose` module for both. TODO: remove the hardcoded admin (`WI-18`) |
 | Data model / DB          |  97%   | **Schema complete.** Migrations `000000`–`000015` verified `up → down -all → up` on a fresh database: 26 tables, 21 enums, 4 views, 82 indexes, 18 triggers, 43 FKs, 14 policy rows. Remaining: `000013` drop-legacy-donors, deliberately deferred to `WI-37` |
 | DevOps / Docker          |  92%   | + golang-migrate, `migrate` compose service, env-injected secrets, server timeouts, graceful shutdown, structured logs, `/healthz` + `/readyz` |
 | Testing                  |  22%   | CI skeleton (gofmt, vet, build, golangci-lint, govulncheck, tsc, eslint, npm audit, gitleaks, migrate up/down/up). Unit tests for the domain (ABO, blood groups, seed cross-check, RBAC matrix + transitions) and the authorization middleware — **all 660 matrix cells asserted over HTTP, granted and denied**. Still no service, handler or E2E tests — `WI-29` |

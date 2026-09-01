@@ -6,7 +6,7 @@ import {
     FaDroplet, FaGaugeHigh, FaCalendarCheck, FaInbox, FaUsers,
     FaGear, FaArrowRightFromBracket, FaUser,
 } from 'react-icons/fa6'
-import { logout } from '@/lib/actions'
+import { LOGOUT_ACTION } from '@/lib/routes'
 
 type Item = { href: string; label: string; icon: React.ComponentType<{ className?: string }> }
 
@@ -78,7 +78,7 @@ export default function SidebarNav({ role, donorId }: { role: 'admin' | 'donor';
                     <FaGear className="text-[0.95rem] transition-transform duration-300 group-hover:rotate-90" />
                     Settings
                 </Link>
-                <form action={logout}>
+                <form action={LOGOUT_ACTION} method="post">
                     <button
                         type="submit"
                         className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium text-zinc-500 hover:text-rose-700 hover:bg-rose-50 transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2"

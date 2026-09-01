@@ -1,0 +1,8 @@
+# Root-level guard for any build that uses the repository root as its context.
+.git
+.env
+.env.*
+!.env.example
+**/node_modules
+**/.next
+*.log

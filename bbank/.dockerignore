@@ -1,0 +1,22 @@
+# Everything the image builds for itself. Without this the build context is the
+# whole working tree — node_modules and .next alone pushed it past 3 GB, and
+# Docker transfers all of it before the first instruction runs.
+node_modules
+.next
+out
+build
+
+# Never bake secrets into an image layer.
+.env
+.env.*
+!.env.example
+
+.git
+.gitignore
+npm-debug.log*
+.DS_Store
+*.tsbuildinfo
+next-env.d.ts
+coverage
+.vscode
+.idea

@@ -75,6 +75,14 @@ services:
     environment:
       # Server components/actions call the Go API over the compose network, not localhost.
       API_BASE_URL: ${API_BASE_URL:-http://goapp:8000}
+      # WI-19: the frontend VERIFIES tokens, so it needs the issuer and audience to
+      # check them against — but never the signing key. It fetches the public half
+      # from the API at /api/v1/auth/public-key, so no key material is copied by hand.
+      JWT_ISSUER: ${JWT_ISSUER:-https://api.bbank.local}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-bbank-web}
+      # Must match the API's value: the frontend re-sets the same cookies onto
+      # its own origin, and if the two disagree the browser drops the session.
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
     ports:
       - "3000:3000"
     depends_on:

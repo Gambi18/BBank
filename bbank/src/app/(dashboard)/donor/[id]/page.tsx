@@ -1,18 +1,11 @@
 import React from 'react'
-import { revalidatePath } from 'next/cache'
-import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import {
     FaUser, FaHeartPulse, FaCalendarCheck, FaDroplet, FaPen, FaArrowRight,
 } from 'react-icons/fa6'
-import { api } from '@/lib/api'
-
-interface Appointment {
-    id: number
-    donor_id: number
-    donor_name: string
-    appointment_date: string
-}
+import { getDonor, bloodType } from '@/lib/data/donors'
+import { listAppointments } from '@/lib/data/appointments'
+import { requestAppointment } from '@/lib/actions/requests'
 
 const fmtDate = (d: string) =>
     d ? new Date(d).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : null
@@ -20,47 +13,26 @@ const fmtDate = (d: string) =>
 async function DonorDetails({ params }: { params: Promise<{ id: string }> }) {
     const { id } = await params
 
-    // Fetch donor data
-    const donorRes = await fetch(api(`/api/go/donors/${id}`), { cache: 'no-store' })
-    if (!donorRes.ok) {
-        throw new Error(`Failed to fetch donor with ID ${id}`)
-    }
-    const donorData = await donorRes.json()
+    // The id in the URL is not identity — the API compares it to the token's
+    // `sub` and answers 404 for anyone else's record (WI-20). It is kept in the
+    // path because it is a shareable, bookmarkable address for staff and admins,
+    // who are allowed to read other donors.
+    const donorData = await getDonor(id)
 
-    // Fetch appointments for this donor (restricted visibility)
-    const appointmentsRes = await fetch(api(`/api/go/appointments?donor_id=${id}`), { cache: 'no-store' })
-    let appointments: Appointment[] = []
-    if (appointmentsRes.ok) {
-        appointments = await appointmentsRes.json()
-    }
-
-    async function handleRequest() {
-        'use server'
-        const res = await fetch(api('/api/go/requests'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ donor_id: parseInt(id) }),
-        })
-
-        if (res.ok) {
-            revalidatePath(`/donor/${id}`)
-            redirect(`/donor/${id}?success=Request+sent!+We+will+confirm+a+date+soon.`)
-        } else {
-            console.error(await res.text())
-            redirect(`/donor/${id}?error=Failed+to+request+appointment`)
-        }
-    }
+    // No `?donor_id=` — the API scopes the list from the token. Passing an id
+    // here is what the A14 bug did.
+    const appointments = await listAppointments()
 
     const firstName = donorData.full_name?.split(' ')[0] || 'Donor'
-    const profileIncomplete = !donorData.blood_group || !donorData.contact
+    const profileIncomplete = !donorData.blood_group || !donorData.contact_phone
 
     const infoRows = [
         { label: 'Name', value: donorData.full_name },
         { label: 'Email', value: donorData.email },
-        { label: 'Date of birth', value: fmtDate(donorData.dob) },
+        { label: 'Date of birth', value: fmtDate(donorData.date_of_birth ?? '') },
         { label: 'Gender', value: donorData.gender },
-        { label: 'Contact', value: donorData.contact },
-        { label: 'Address', value: donorData.address },
+        { label: 'Contact', value: donorData.contact_phone },
+        { label: 'Address', value: donorData.address_line },
     ]
 
     return (
@@ -116,8 +88,8 @@ async function DonorDetails({ params }: { params: Promise<{ id: string }> }) {
                         <ul className="flex flex-col mt-5">
                             <li className="flex justify-between items-center gap-6 py-2.5 border-b border-black/5 text-sm">
                                 <span className="text-zinc-500">Blood group</span>
-                                {donorData.blood_group
-                                    ? <span className="badge badge-accent"><FaDroplet className="text-xs" />{donorData.blood_group} {donorData.rhesus}</span>
+                                {bloodType(donorData)
+                                    ? <span className="badge badge-accent"><FaDroplet className="text-xs" />{bloodType(donorData)}</span>
                                     : <span className="badge badge-muted">Unknown</span>}
                             </li>
                             <li className="flex justify-between gap-6 py-2.5 border-b border-black/5 text-sm">
@@ -125,8 +97,12 @@ async function DonorDetails({ params }: { params: Promise<{ id: string }> }) {
                                 <span className='text-zinc-900 font-medium'>{donorData.rhesus || <span className="text-zinc-400 font-normal">Not set</span>}</span>
                             </li>
                             <li className="flex justify-between gap-6 py-2.5 text-sm">
-                                <span className="text-zinc-500">Last donation</span>
-                                <span className='text-zinc-900 font-medium'>{fmtDate(donorData.last_donation) || <span className="badge badge-muted">Never donated</span>}</span>
+                                <span className="text-zinc-500">Donations</span>
+                                <span className='text-zinc-900 font-medium'>
+                                    {donorData.total_donations > 0
+                                        ? `${donorData.total_donations} recorded`
+                                        : <span className="badge badge-muted">Never donated</span>}
+                                </span>
                             </li>
                         </ul>
                     </div>
@@ -159,7 +135,7 @@ async function DonorDetails({ params }: { params: Promise<{ id: string }> }) {
                             </li>
                         )}
                     </ul>
-                    <form action={handleRequest} className="mt-6">
+                    <form action={requestAppointment} className="mt-6">
                         <button type="submit" className='btn btn-primary w-full btn-lg pulse-ring'>
                             Request appointment <FaArrowRight className="text-sm" />
                         </button>

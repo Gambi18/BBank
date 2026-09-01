@@ -1,5 +1,5 @@
 import { FaArrowRightFromBracket, FaShieldHalved } from 'react-icons/fa6'
-import { logout } from '@/lib/actions'
+import { LOGOUT_ACTION } from '@/lib/routes'
 
 function AdminSettings() {
     return (
@@ -21,7 +21,7 @@ function AdminSettings() {
 
                 <hr className="border-black/5" />
 
-                <form action={logout}>
+                <form action={LOGOUT_ACTION} method="post">
                     <button type="submit" className='btn btn-ghost hover:!border-rose-300 hover:!text-rose-700'>
                         <FaArrowRightFromBracket /> Log out
                     </button>

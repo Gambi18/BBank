@@ -1,0 +1,65 @@
+- generic [active] [ref=e1]:
+  - link "Skip to content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e99]:
+    - complementary [ref=e100]:
+      - link "BloodBank" [ref=e101] [cursor=pointer]:
+        - /url: /donor/21
+      - generic [ref=e106]: Your space
+      - navigation [ref=e107]:
+        - link "My profile" [ref=e108] [cursor=pointer]:
+          - /url: /donor/21
+      - generic [ref=e112]:
+        - link "Settings" [ref=e113] [cursor=pointer]:
+          - /url: /donor/settings
+        - button "Log out" [ref=e117]
+    - main [ref=e120]:
+      - generic [ref=e122]:
+        - generic [ref=e123]:
+          - generic [ref=e124]: Donor space
+          - heading "Welcome back, Amina" [level=1] [ref=e126]
+          - paragraph [ref=e127]: Your profile, health record and upcoming donations.
+        - generic [ref=e128]:
+          - generic [ref=e129]:
+            - generic [ref=e130]:
+              - heading [level=2] [ref=e131]
+              - list [ref=e135]:
+                - listitem [ref=e136]:
+                  - generic [ref=e137]: Name
+                  - generic [ref=e138]: Amina Scratch
+                - listitem [ref=e139]:
+                  - generic [ref=e140]: Email
+                  - generic [ref=e141]: wi19.donor@scratch.test
+                - listitem [ref=e142]:
+                  - generic [ref=e143]: Date of birth
+                  - generic [ref=e144]: Friday, March 11, 1994
+                - listitem [ref=e145]:
+                  - generic [ref=e146]: Gender
+                  - generic [ref=e147]: female
+                - listitem [ref=e148]:
+                  - generic [ref=e149]: Contact
+                  - generic [ref=e150]: "+237677000111"
+                - listitem [ref=e151]:
+                  - generic [ref=e152]: Address
+                  - generic [ref=e153]: Bonanjo, Douala
+            - generic [ref=e154]:
+              - heading [level=2] [ref=e155]
+              - list [ref=e159]:
+                - listitem [ref=e160]:
+                  - generic [ref=e161]: Blood group
+                  - generic [ref=e162]: O-
+                - listitem [ref=e165]:
+                  - generic [ref=e166]: Rhesus
+                  - generic [ref=e167]: negative
+                - listitem [ref=e168]:
+                  - generic [ref=e169]: Donations
+                  - generic [ref=e170]: Never donated
+          - generic [ref=e172]:
+            - heading [level=2] [ref=e173]
+            - list [ref=e177]:
+              - listitem [ref=e178]:
+                - generic [ref=e182]: No appointments yet
+                - generic [ref=e183]: Request one below and a coordinator will confirm a date.
+            - button "Request appointment" [ref=e185] [cursor=pointer]
+  - button "Open Next.js Dev Tools" [ref=e94] [cursor=pointer]
+  - alert [ref=e98]

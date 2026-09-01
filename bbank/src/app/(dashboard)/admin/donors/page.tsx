@@ -1,16 +1,6 @@
 import React from 'react'
 import { FaUsers } from 'react-icons/fa6'
-import { api } from '@/lib/api'
-
-interface Donor {
-    id: number
-    full_name: string
-    email: string
-    contact: string
-    blood_group: string
-    rhesus: string
-    last_donation: string
-}
+import { listDonors, bloodType } from '@/lib/data/donors'
 
 const initials = (name: string) =>
     name
@@ -21,22 +11,19 @@ const initials = (name: string) =>
         .join('')
         .toUpperCase() || '?'
 
-const fmtDate = (d: string) => (d ? new Date(d).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : null)
-
 async function Donors() {
-    const res = await fetch(api('/api/go/donors'), { cache: 'no-store' })
-    if (!res.ok) {
-        throw new Error('Failed to fetch donors')
-    }
-
-    const data: Donor[] = await res.json()
+    // The layered handler answers with the `{data, page}` envelope, so `total` is
+    // the size of the registry rather than the size of this page of it. The old
+    // code read `res.json()` as a bare array and quietly rendered nothing.
+    const { items: data, page } = await listDonors({ limit: 100 })
+    const total = page?.total ?? data.length
 
     return (
         <div className="animate-fade-up">
             <header className="mb-8">
                 <div className="eyebrow">Registry</div>
                 <h1 className='headline text-3xl lg:text-4xl mt-3'>Donors</h1>
-                <p className="text-zinc-500 mt-2">{data.length} {data.length === 1 ? 'person' : 'people'} registered to give.</p>
+                <p className="text-zinc-500 mt-2">{total} {total === 1 ? 'person' : 'people'} registered to give.</p>
             </header>
 
             <div className='card overflow-hidden'>
@@ -47,7 +34,7 @@ async function Donors() {
                                 <th>Donor</th>
                                 <th>Contact</th>
                                 <th>Blood type</th>
-                                <th>Last donation</th>
+                                <th>Donations</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -62,11 +49,17 @@ async function Donors() {
                                             </div>
                                         </div>
                                     </td>
-                                    <td>{donor.contact || <span className="text-zinc-400">—</span>}</td>
+                                    <td>{donor.contact_phone || <span className="text-zinc-400">—</span>}</td>
                                     <td>
-                                        <span className="badge badge-accent">{donor.blood_group || '?'}{donor.rhesus === 'Positive' || donor.rhesus === '+' ? '+' : donor.rhesus === 'Negative' || donor.rhesus === '−' || donor.rhesus === '-' ? '−' : ` ${donor.rhesus}`}</span>
+                                        {bloodType(donor)
+                                            ? <span className="badge badge-accent">{bloodType(donor)}</span>
+                                            : <span className="badge badge-muted" title="Set by the lab, not self-declared">Untyped</span>}
                                     </td>
-                                    <td>{fmtDate(donor.last_donation) ?? <span className="badge badge-muted">Never</span>}</td>
+                                    <td>
+                                        {donor.total_donations > 0
+                                            ? `${donor.total_donations} ${donor.total_donations === 1 ? 'donation' : 'donations'}`
+                                            : <span className="badge badge-muted">Never</span>}
+                                    </td>
                                 </tr>
                             ))}
                             {data.length === 0 && (

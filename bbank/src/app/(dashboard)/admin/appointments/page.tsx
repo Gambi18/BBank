@@ -1,12 +1,5 @@
 import { FaCalendarCheck } from 'react-icons/fa6'
-import { api } from '@/lib/api'
-
-interface Appointment {
-    id: number
-    donor_id: number
-    donor_name: string
-    appointment_date: string
-}
+import { listAppointments } from '@/lib/data/appointments'
 
 const initials = (name: string) =>
     name.split(' ').map((p) => p[0]).filter(Boolean).slice(0, 2).join('').toUpperCase() || '?'
@@ -15,12 +8,9 @@ const fmtDate = (d: string) =>
     d ? new Date(d).toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' }) : '—'
 
 async function Appointments() {
-    const res = await fetch(api('/api/go/appointments'), { cache: 'no-store' })
-    if (!res.ok) {
-        throw new Error('Failed to fetch appointments')
-    }
-
-    const data: Appointment[] = await res.json()
+    // Scoped by the API from the caller's token: an admin sees every centre, a
+    // staff member only their own. No filter is passed from here on purpose.
+    const data = await listAppointments()
 
     return (
         <div className="animate-fade-up">

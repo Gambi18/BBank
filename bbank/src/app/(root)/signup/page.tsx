@@ -1,43 +1,8 @@
 import Link from 'next/link'
-import { redirect } from 'next/navigation'
 import { FaDroplet, FaArrowRight } from 'react-icons/fa6'
-import { api } from '@/lib/api'
-import { setSession } from '@/lib/session'
+import { signup } from '@/lib/actions/donors'
 
 export default function Signup() {
-    async function handleSignup(formData: FormData) {
-        'use server'
-
-        const rawFormData = {
-            full_name: formData.get('full_name'),
-            email: String(formData.get('email') || '').trim().toLowerCase(),
-            password: formData.get('password'),
-            dob: formData.get('dob'),
-            gender: '',
-            blood_group: '',
-            rhesus: '',
-            contact: '',
-            address: '',
-            last_donation: '',
-        }
-
-        const res = await fetch(api('/api/go/donors'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(rawFormData),
-            cache: 'no-store',
-        })
-
-        if (res.ok) {
-            const data = await res.json()
-            await setSession({ role: 'donor', id: String(data.id) })
-            redirect(`/donor/${data.id}?success=Welcome+to+BloodBank!`)
-        }
-
-        console.error('Failed to create donor')
-        redirect('/signup?error=Failed+to+create+account')
-    }
-
     return (
         <div className='min-h-screen mesh flex items-center justify-center px-6 pt-28 pb-16 relative overflow-hidden'>
             <div className="blob w-96 h-96 bg-rose-100/70 -bottom-24 -right-24" aria-hidden />
@@ -47,7 +12,22 @@ export default function Signup() {
                     <h2 className="text-2xl font-bold tracking-tight">Create your account</h2>
                     <p className="text-zinc-500 text-sm mt-1.5">Join the registry — it takes under a minute.</p>
 
-                    <form action={handleSignup} className="flex flex-col gap-5 mt-8">
+                    {/*
+                      Signup posted to POST /api/go/donors, which went away when donors
+                      moved to the layered handlers (WI-11 carried only the reads over).
+                      WI-22 rebuilds it as POST /api/v1/donors, writing a `users` row and
+                      a `donor_profiles` row in one transaction. Until then the form says
+                      so rather than accepting details and losing them.
+                    */}
+                    <p id="signup-unavailable" className="mt-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                        <strong className="font-semibold">Signup is temporarily unavailable.</strong>{' '}
+                        Registration is being rebuilt on the new donor schema (<code>WI-22</code>).
+                        If you already have an account you can still{' '}
+                        <Link href="/login" className="font-semibold underline underline-offset-2">log in</Link>.
+                    </p>
+
+                    <fieldset disabled aria-describedby="signup-unavailable" className="opacity-60">
+                    <form action={signup} className="flex flex-col gap-5 mt-8">
                         <div className="animate-fade-up anim-delay-1">
                             <label className="label" htmlFor="full_name">Full name</label>
                             <input id="full_name" type="text" name="full_name" placeholder="Amara Tchinda" className="field" required autoComplete="name" />
@@ -68,6 +48,7 @@ export default function Signup() {
                             Sign up <FaArrowRight className="text-sm" />
                         </button>
                     </form>
+                    </fieldset>
 
                     <div className="flex items-center gap-4 my-7 text-zinc-400 text-xs">
                         <span className="flex-1 h-px bg-black/5" /> OR <span className="flex-1 h-px bg-black/5" />

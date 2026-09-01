@@ -1,38 +1,8 @@
 import Link from 'next/link'
-import { redirect } from 'next/navigation'
 import { FaDroplet, FaArrowRight } from 'react-icons/fa6'
-import { api } from '@/lib/api'
-import { setSession } from '@/lib/session'
+import { login } from '@/lib/actions/auth'
 
 export default function Login() {
-    async function handleLogin(formData: FormData) {
-        'use server'
-        const email = String(formData.get('email') || '').trim().toLowerCase()
-        const password = String(formData.get('password') || '')
-
-        // Hardcoded admin login
-        if (email === 'admin@admin.com' && password === 'admin') {
-            await setSession({ role: 'admin' })
-            redirect('/admin')
-        }
-
-        // Verify against the backend (bcrypt check happens server-side)
-        const res = await fetch(api('/api/go/login'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, password }),
-            cache: 'no-store',
-        })
-
-        if (res.ok) {
-            const donor = await res.json()
-            await setSession({ role: 'donor', id: String(donor.id) })
-            redirect(`/donor/${donor.id}`)
-        }
-
-        redirect('/login?error=Invalid+email+or+password')
-    }
-
     return (
         <div className='min-h-screen mesh flex items-center justify-center px-6 pt-28 pb-16 relative overflow-hidden'>
             <div className="blob w-96 h-96 bg-rose-100/70 -top-24 -left-24" aria-hidden />
@@ -60,7 +30,7 @@ export default function Login() {
                     <h2 className="text-2xl font-bold tracking-tight">Log in</h2>
                     <p className="text-zinc-500 text-sm mt-1.5">Enter your credentials to continue.</p>
 
-                    <form action={handleLogin} className="flex flex-col gap-5 mt-8">
+                    <form action={login} className="flex flex-col gap-5 mt-8">
                         <div className="animate-fade-up anim-delay-1">
                             <label className="label" htmlFor="email">Email</label>
                             <input id="email" type="email" name="email" placeholder="kofi@example.com" className="field" required autoComplete="email" />

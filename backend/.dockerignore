@@ -1,0 +1,12 @@
+# The Go build needs source, go.mod and go.sum — nothing else.
+.env
+.env.*
+!.env.example
+
+.git
+.gitignore
+*.log
+bbank
+tmp
+.vscode
+.idea

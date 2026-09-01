@@ -1,46 +1,15 @@
-import { redirect } from 'next/navigation'
-import { revalidatePath } from 'next/cache'
-import { api } from '@/lib/api'
-import { getSession } from '@/lib/session'
+import { requireSession } from '@/lib/session'
+import { getDonor, bloodType } from '@/lib/data/donors'
+import { updateDonorProfile } from '@/lib/actions/donors'
 
 async function DonorSettings() {
-    const session = await getSession()
-    if (!session?.id) redirect('/login')
-
-    const res = await fetch(api(`/api/go/donors/${session.id}`), { cache: 'no-store' })
-    if (!res.ok) throw new Error('Failed to load profile')
-    const d = await res.json()
-
-    async function updateProfile(formData: FormData) {
-        'use server'
-        const body = {
-            full_name: formData.get('full_name'),
-            email: formData.get('email'),
-            dob: formData.get('dob'),
-            gender: formData.get('gender'),
-            blood_group: formData.get('blood_group'),
-            rhesus: formData.get('rhesus'),
-            contact: formData.get('contact'),
-            address: formData.get('address'),
-            last_donation: formData.get('last_donation'),
-            password: formData.get('password') || '', // blank keeps the current password
-        }
-
-        const res = await fetch(api(`/api/go/donors/${session!.id}`), {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-        })
-
-        if (res.ok) {
-            revalidatePath(`/donor/${session!.id}`)
-            redirect('/donor/settings?success=Profile+updated')
-        }
-        redirect('/donor/settings?error=Update+failed')
-    }
+    // The id comes from the verified token, never from the URL — and the API
+    // would return 404 for anyone else's record anyway (WI-20).
+    const session = await requireSession()
+    const d = await getDonor(session.userId)
 
     // Dates may come back as RFC3339 timestamps; <input type=date> needs YYYY-MM-DD.
-    const dateOnly = (v: string) => (v ? v.slice(0, 10) : '')
+    const dateOnly = (v?: string | null) => (v ? v.slice(0, 10) : '')
 
     return (
         <div className="max-w-2xl animate-fade-up">
@@ -51,7 +20,20 @@ async function DonorSettings() {
             </header>
 
             <div className="card p-8">
-                <form action={updateProfile} className='grid sm:grid-cols-2 gap-5'>
+                {/*
+                  The PUT endpoint behind this form went away when donors moved to
+                  the layered handlers (WI-11 brought only the reads across); WI-22
+                  restores it as PATCH /api/v1/donors/{id}. The fields still render
+                  with your current details so the page is useful to read.
+                */}
+                <p id="profile-unavailable" className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                    <strong className="font-semibold">Editing is temporarily unavailable.</strong>{' '}
+                    Your profile is being rebuilt on the new schema (<code>WI-22</code>). Everything below
+                    is shown read-only until then.
+                </p>
+
+                <fieldset disabled aria-describedby="profile-unavailable" className="opacity-60">
+                <form action={updateDonorProfile} className='grid sm:grid-cols-2 gap-5'>
                     <div className="sm:col-span-2">
                         <label className="label" htmlFor="full_name">Full name</label>
                         <input id="full_name" type="text" name="full_name" defaultValue={d.full_name} className='field' required />
@@ -61,41 +43,50 @@ async function DonorSettings() {
                         <input id="email" type="email" name="email" defaultValue={d.email} className='field' required />
                     </div>
                     <div>
-                        <label className="label" htmlFor="dob">Date of birth</label>
-                        <input id="dob" type="date" name="dob" defaultValue={dateOnly(d.dob)} className='field' />
+                        <label className="label" htmlFor="date_of_birth">Date of birth</label>
+                        <input id="date_of_birth" type="date" name="date_of_birth" defaultValue={dateOnly(d.date_of_birth)} className='field' />
                     </div>
                     <div>
                         <label className="label" htmlFor="gender">Gender</label>
-                        <input id="gender" type="text" name="gender" defaultValue={d.gender} placeholder="Gender" className='field' />
+                        <input id="gender" type="text" name="gender" defaultValue={d.gender ?? ''} placeholder="Gender" className='field' />
                     </div>
                     <div>
-                        <label className="label" htmlFor="blood_group">Blood group</label>
-                        <input id="blood_group" type="text" name="blood_group" defaultValue={d.blood_group} placeholder="e.g. O" className='field' />
+                        <label className="label" htmlFor="contact_phone">Contact</label>
+                        <input id="contact_phone" type="tel" name="contact_phone" defaultValue={d.contact_phone ?? ''} placeholder="Phone" className='field' />
                     </div>
                     <div>
-                        <label className="label" htmlFor="rhesus">Rhesus</label>
-                        <input id="rhesus" type="text" name="rhesus" defaultValue={d.rhesus} placeholder="e.g. +" className='field' />
-                    </div>
-                    <div>
-                        <label className="label" htmlFor="contact">Contact</label>
-                        <input id="contact" type="text" name="contact" defaultValue={d.contact} placeholder="Phone" className='field' />
-                    </div>
-                    <div>
-                        <label className="label" htmlFor="address">Address</label>
-                        <input id="address" type="text" name="address" defaultValue={d.address} placeholder="City, street" className='field' />
-                    </div>
-                    <div>
-                        <label className="label" htmlFor="last_donation">Last donation</label>
-                        <input id="last_donation" type="date" name="last_donation" defaultValue={dateOnly(d.last_donation)} className='field' />
-                    </div>
-                    <div>
-                        <label className="label" htmlFor="password">New password <span className="text-zinc-600">(optional)</span></label>
-                        <input id="password" type="password" name="password" placeholder="Leave blank to keep current" className='field' autoComplete="new-password" />
+                        <label className="label" htmlFor="address_line">Address</label>
+                        <input id="address_line" type="text" name="address_line" defaultValue={d.address_line ?? ''} placeholder="City, street" className='field' />
                     </div>
                     <div className="sm:col-span-2 pt-2">
                         <button type="submit" className='btn btn-primary px-8'>Save changes</button>
                     </div>
                 </form>
+                </fieldset>
+
+                {/*
+                  Blood group, rhesus and donation count are deliberately NOT fields
+                  on this form. TRD §7.7: they are clinical facts set by staff and
+                  the lab, not something a donor declares about themselves. They are
+                  shown here, but only as facts.
+                */}
+                <dl className="mt-8 pt-6 border-t border-black/5 grid sm:grid-cols-3 gap-4 text-sm">
+                    <div>
+                        <dt className="text-zinc-500">Blood type</dt>
+                        <dd className="font-medium text-zinc-900 mt-0.5">{bloodType(d) ?? 'Not yet typed'}</dd>
+                    </div>
+                    <div>
+                        <dt className="text-zinc-500">Donations</dt>
+                        <dd className="font-medium text-zinc-900 mt-0.5">{d.total_donations}</dd>
+                    </div>
+                    <div>
+                        <dt className="text-zinc-500">Status</dt>
+                        <dd className="font-medium text-zinc-900 mt-0.5 capitalize">{d.status?.replace(/_/g, ' ')}</dd>
+                    </div>
+                </dl>
+                <p className="mt-3 text-xs text-zinc-400">
+                    Set by the clinical team — these are not self-declared.
+                </p>
             </div>
         </div>
     )

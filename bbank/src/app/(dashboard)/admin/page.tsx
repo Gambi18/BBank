@@ -1,53 +1,24 @@
 import Link from 'next/link'
-import { redirect } from 'next/navigation'
-import { revalidatePath } from 'next/cache'
 import { FaCalendarCheck, FaInbox, FaUserPlus, FaUsers, FaArrowRight } from 'react-icons/fa6'
-import { api } from '@/lib/api'
+import { listDonors } from '@/lib/data/donors'
+import { listAppointments } from '@/lib/data/appointments'
+import { listRequests } from '@/lib/data/requests'
+import { createDonor } from '@/lib/actions/donors'
 
 async function admin() {
-    const [appointmentsRes, requestsRes, donorsRes] = await Promise.all([
-        fetch(api('/api/go/appointments'), { cache: 'no-store' }),
-        fetch(api('/api/go/requests'), { cache: 'no-store' }),
-        fetch(api('/api/go/donors'), { cache: 'no-store' }),
+    // `limit: 1` because only the count is needed here — the envelope's `total`
+    // is the whole registry, so there is no reason to pull every row to call
+    // `.length` on it.
+    const [appointments, requests, donors] = await Promise.all([
+        listAppointments(),
+        listRequests(),
+        listDonors({ limit: 1 }),
     ])
-
-    const appointments = appointmentsRes.ok ? await appointmentsRes.json() : []
-    const requests = requestsRes.ok ? await requestsRes.json() : []
-    const donors = donorsRes.ok ? await donorsRes.json() : []
-
-    async function createDonor(formData: FormData) {
-        'use server'
-
-        const rawFormData = {
-            full_name: formData.get('name'),
-            email: formData.get('email'),
-            password: formData.get('password'),
-            dob: formData.get('dob'),
-            gender: formData.get('gender'),
-            blood_group: formData.get('blood_group'),
-            rhesus: formData.get('rhesus'),
-            contact: formData.get('contact'),
-            address: formData.get('address'),
-            last_donation: formData.get('last_donation'),
-        }
-
-        const res = await fetch(api('/api/go/donors'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(rawFormData),
-        })
-
-        if (!res.ok) {
-            redirect('/admin?error=Failed+to+create+donor')
-        }
-        revalidatePath('/admin/donors')
-        redirect('/admin?success=Successfully+created+donor')
-    }
 
     const statCards = [
         { href: '/admin/appointments', icon: FaCalendarCheck, label: 'Appointments', value: appointments.length, hint: 'scheduled' },
         { href: '/admin/requests', icon: FaInbox, label: 'Requests', value: requests.length, hint: 'pending review' },
-        { href: '/admin/donors', icon: FaUsers, label: 'Donors', value: donors.length, hint: 'in the registry' },
+        { href: '/admin/donors', icon: FaUsers, label: 'Donors', value: donors.page?.total ?? donors.items.length, hint: 'in the registry' },
     ]
 
     return (
@@ -84,6 +55,21 @@ async function admin() {
                         <p className="text-zinc-500 text-sm">Add a walk-in donor directly to the registry.</p>
                     </div>
                 </div>
+
+                {/*
+                  The write endpoint this form posted to went away when donors moved
+                  to the layered handlers (WI-11 kept only the reads); WI-22 restores
+                  it. Saying so is better than a form that looks live and fails on
+                  submit — and better than deleting the UI, which would lose the
+                  design work and hide the gap.
+                */}
+                <p id="create-donor-unavailable" className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                    <strong className="font-semibold">Temporarily unavailable.</strong>{' '}
+                    Donor registration is being rebuilt on the new schema (<code>WI-22</code>). The form
+                    below is disabled until then.
+                </p>
+
+                <fieldset disabled aria-describedby="create-donor-unavailable" className="opacity-60">
                 <form action={createDonor} className='grid sm:grid-cols-2 gap-5'>
                     <div>
                         <label className="label" htmlFor="name">Full name</label>
@@ -131,6 +117,7 @@ async function admin() {
                         <button type="submit" className='btn btn-primary px-8'>Add donor</button>
                     </div>
                 </form>
+                </fieldset>
             </div>
         </div>
     )
