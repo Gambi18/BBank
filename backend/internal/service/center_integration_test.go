@@ -72,7 +72,7 @@ func TestWI24_ConcurrentApprovalsCannotOverbookASlot(t *testing.T) {
 		go func(id int32) {
 			defer wg.Done()
 			<-start
-			_, err := requests.Approve(ctx, id, 1, when, allow)
+			_, err := requests.Approve(ctx, id, 1, service.OnDate(when), allow)
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
@@ -122,7 +122,7 @@ func TestWI24_ASlotFillsToCapacityAndNoFurther(t *testing.T) {
 			t.Fatalf("create %d: %v", i, err)
 		}
 
-		_, err = requests.Approve(ctx, row.ID, 1, when, allow)
+		_, err = requests.Approve(ctx, row.ID, 1, service.OnDate(when), allow)
 		if i < seats {
 			if err != nil {
 				t.Fatalf("approval %d of %d seats failed: %v", i+1, seats, err)
@@ -159,7 +159,7 @@ func TestWI24_OnlyCancellingFreesASeat(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create for %s: %v", email, err)
 		}
-		appt, err := requests.Approve(ctx, row.ID, 1, when, allow)
+		appt, err := requests.Approve(ctx, row.ID, 1, service.OnDate(when), allow)
 		return appt.ID, err
 	}
 
@@ -203,7 +203,7 @@ func TestWI24_DeactivatingACentreStopsBookingsAndKeepsHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	appt, err := requests.Approve(ctx, row.ID, 1, when, allow)
+	appt, err := requests.Approve(ctx, row.ID, 1, service.OnDate(when), allow)
 	if err != nil {
 		t.Fatalf("approve: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestWI24_RequestedTimesAreSnappedToTheSlotGrid(t *testing.T) {
 		{11, 29, 11, 0},
 		{11, 30, 11, 30}, // the last slot that finishes by 12:00
 	} {
-		got, err := centers.SlotFor(ctx, center, at(c.h, c.m))
+		got, err := centers.SlotFor(ctx, center, service.AtTime(at(c.h, c.m)))
 		if err != nil {
 			t.Errorf("%02d:%02d: %v", c.h, c.m, err)
 			continue
@@ -329,16 +329,16 @@ func TestWI24_RequestedTimesAreSnappedToTheSlotGrid(t *testing.T) {
 
 	// Outside opening hours is refused, not quietly relocated: booking at a time
 	// the centre is shut is a mistake, and moving it hides the mistake.
-	if _, err := centers.SlotFor(ctx, center, at(7, 30)); !errors.Is(err, service.ErrConflict) {
+	if _, err := centers.SlotFor(ctx, center, service.AtTime(at(7, 30))); !errors.Is(err, service.ErrConflict) {
 		t.Errorf("07:30 (before opening) = %v, want a conflict", err)
 	}
-	if _, err := centers.SlotFor(ctx, center, at(13, 0)); !errors.Is(err, service.ErrConflict) {
+	if _, err := centers.SlotFor(ctx, center, service.AtTime(at(13, 0))); !errors.Is(err, service.ErrConflict) {
 		t.Errorf("13:00 (after closing) = %v, want a conflict", err)
 	}
 	// 11:45 snaps DOWN to 11:30, which finishes exactly at closing. Snapping down
 	// is the point: the donor asked for late morning and gets the slot their
 	// request falls in, rather than being moved to a later appointment.
-	if got, err := centers.SlotFor(ctx, center, at(11, 45)); err != nil {
+	if got, err := centers.SlotFor(ctx, center, service.AtTime(at(11, 45))); err != nil {
 		t.Errorf("11:45: %v", err)
 	} else if got.In(loc).Format("15:04") != "11:30" {
 		t.Errorf("11:45 snapped to %s, want 11:30", got.In(loc).Format("15:04"))
@@ -354,11 +354,11 @@ func TestWI24_RequestedTimesAreSnappedToTheSlotGrid(t *testing.T) {
 		 WHERE id = $2`, "{"+strings.ToLower(day.Format("Mon"))+"}", center); err != nil {
 		t.Fatalf("configure a ragged day: %v", err)
 	}
-	if _, err := centers.SlotFor(ctx, center, at(12, 5)); !errors.Is(err, service.ErrConflict) {
+	if _, err := centers.SlotFor(ctx, center, service.AtTime(at(12, 5))); !errors.Is(err, service.ErrConflict) {
 		t.Errorf("12:05 on a day closing at 12:10 = %v, want a conflict — no 30-minute slot fits", err)
 	}
 	// And the 11:30 slot is still bookable, because it finishes at 12:00.
-	if _, err := centers.SlotFor(ctx, center, at(11, 30)); err != nil {
+	if _, err := centers.SlotFor(ctx, center, service.AtTime(at(11, 30))); err != nil {
 		t.Errorf("11:30 on a day closing at 12:10 was refused: %v", err)
 	}
 }
@@ -379,7 +379,7 @@ func TestWI24_ACentreWithNoHoursFallsBackRatherThanRefusing(t *testing.T) {
 		t.Skipf("the seeded centre has hours configured (%s); this test is about the unset case", hours)
 	}
 
-	slot, err := centers.SlotFor(ctx, center, time.Now().AddDate(0, 0, 14))
+	slot, err := centers.SlotFor(ctx, center, service.OnDate(time.Now().AddDate(0, 0, 14)))
 	if err != nil {
 		t.Fatalf("a centre with no hours refused every booking: %v", err)
 	}
@@ -475,7 +475,7 @@ func TestWI24_LoweringCapacityKeepsExistingAppointments(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create %d: %v", i, err)
 		}
-		if _, err := requests.Approve(ctx, row.ID, 1, when, allow); err != nil {
+		if _, err := requests.Approve(ctx, row.ID, 1, service.OnDate(when), allow); err != nil {
 			t.Fatalf("approve %d: %v", i, err)
 		}
 	}
@@ -499,7 +499,7 @@ func TestWI24_LoweringCapacityKeepsExistingAppointments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := requests.Approve(ctx, row.ID, 1, when, allow); !errors.Is(err, service.ErrConflict) {
+	if _, err := requests.Approve(ctx, row.ID, 1, service.OnDate(when), allow); !errors.Is(err, service.ErrConflict) {
 		t.Errorf("a booking after the cut = %v, want a conflict", err)
 	}
 }
@@ -532,5 +532,231 @@ func TestWI24_APastDateIsRefused(t *testing.T) {
 		DonorID: donorID, CenterID: &center, PreferredDate: &today,
 	}); err != nil {
 		t.Errorf("a same-day booking was refused: %v", err)
+	}
+}
+
+// Each test below guards a defect the WI-24 review found. Named for the defect,
+// because the requirement was already covered and passing while it was present.
+
+// A bare date must be read in the CENTRE'S timezone, not UTC.
+//
+// `time.Parse("2006-01-02", …)` yields midnight UTC. The first version inferred
+// "the caller named a day" from that reading 00:00 in the centre's location —
+// which for Africa/Douala (UTC+1) is 01:00, so it never fired, fell through to
+// "01:00 is outside opening hours", and returned 409. Every approval at a centre
+// with configured hours failed. No test saw it, because the seeded centre has
+// none and the tests built their inputs in the centre's location directly.
+func TestWI24_ABareDateIsReadInTheCentresTimezone(t *testing.T) {
+	centers, requests, pool := centerSetup(t)
+	ctx := context.Background()
+	center := testsupport.CenterID(t, pool)
+
+	if _, err := pool.Exec(ctx, `
+		UPDATE donation_centers
+		   SET timezone = 'Africa/Douala',
+		       opening_hours = '{"mon":[["08:00","16:00"]],"tue":[["08:00","16:00"]],"wed":[["08:00","16:00"]],
+		                         "thu":[["08:00","16:00"]],"fri":[["08:00","16:00"]],"sat":[["08:00","16:00"]],
+		                         "sun":[["08:00","16:00"]]}'::jsonb
+		 WHERE id = $1`, center); err != nil {
+		t.Fatalf("configure hours: %v", err)
+	}
+
+	// Exactly what the handler produces from `{"date":"YYYY-MM-DD"}`.
+	dateFromHandler, err := time.Parse("2006-01-02", time.Now().AddDate(0, 0, 14).Format("2006-01-02"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	slot, err := centers.SlotFor(ctx, center, service.OnDate(dateFromHandler))
+	if err != nil {
+		t.Fatalf("a bare date at a centre with opening hours was refused: %v", err)
+	}
+	loc, _ := time.LoadLocation("Africa/Douala")
+	if got := slot.In(loc); got.Hour() != 8 || got.Minute() != 0 {
+		t.Errorf("the bare date resolved to %s, want the 08:00 opening slot", got.Format("15:04"))
+	}
+	// And the same date the caller wrote, not the day before.
+	if got, want := slot.In(loc).Format("2006-01-02"), dateFromHandler.Format("2006-01-02"); got != want {
+		t.Errorf("resolved to %s, want %s", got, want)
+	}
+
+	// End to end: an approval must now succeed at that centre.
+	donorID := newAdultDonor(t, pool, "baredate@example.test")
+	preferred := time.Now().AddDate(0, 0, 14)
+	row, err := requests.Create(ctx, service.CreateRequestParams{
+		DonorID: donorID, CenterID: &center, PreferredDate: &preferred,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := requests.Approve(ctx, row.ID, 1, service.OnDate(dateFromHandler), allow); err != nil {
+		t.Fatalf("approval at a centre with opening hours failed: %v", err)
+	}
+}
+
+// The slots endpoint and the booking path must agree about what a slot is.
+//
+// `SlotFor` fell back to 09:00 for an unconfigured centre while `SlotsOn`
+// returned nothing, so on the shipped database a booking UI showed "no slots on
+// any date" while approvals at that same centre succeeded — the two halves of
+// one feature disagreeing.
+func TestWI24_TheSlotsListAgreesWithWhatBookingAccepts(t *testing.T) {
+	centers, _, pool := centerSetup(t)
+	ctx := context.Background()
+	center := testsupport.CenterID(t, pool)
+
+	var hours []byte
+	if err := pool.QueryRow(ctx, `SELECT opening_hours FROM donation_centers WHERE id = $1`, center).Scan(&hours); err != nil {
+		t.Fatalf("read hours: %v", err)
+	}
+	if string(hours) != "{}" {
+		t.Skipf("the seeded centre has hours (%s); this test is about the unconfigured case", hours)
+	}
+
+	day := time.Now().AddDate(0, 0, 14)
+	_, sched, err := centers.SlotOccupancy(ctx, center, day)
+	if err != nil {
+		t.Fatalf("occupancy: %v", err)
+	}
+	slots := sched.SlotsOn(day)
+	if len(slots) == 0 {
+		t.Fatal("an unconfigured centre offers no slots, but booking at it succeeds — the two halves disagree")
+	}
+
+	// Every slot the list offers must be one booking accepts.
+	for _, s := range slots {
+		if _, err := centers.SlotFor(ctx, center, service.AtTime(s)); err != nil {
+			t.Errorf("the slots list offers %s but booking refuses it: %v", s.Format("15:04"), err)
+		}
+	}
+	// And the first one is the historical 09:00, so nothing already booked moves.
+	if got := slots[0].In(sched.Location); got.Hour() != 9 || got.Minute() != 0 {
+		t.Errorf("the first slot is %s, want 09:00", got.Format("15:04"))
+	}
+}
+
+// A blank timezone must be refused, not silently read as UTC.
+//
+// `time.LoadLocation("")` returns UTC with no error, and `COALESCE(”::text, …)`
+// writes the empty string rather than leaving the column alone — so
+// `{"timezone": ""}` relocated a centre to UTC and shifted every slot by its
+// real offset, with no diagnostic anywhere.
+func TestWI24_ABlankTimezoneIsRefused(t *testing.T) {
+	centers, _, pool := centerSetup(t)
+	ctx := context.Background()
+	center := testsupport.CenterID(t, pool)
+
+	for _, blank := range []string{"", "   "} {
+		tz := blank
+		if _, err := centers.Update(ctx, center, service.CenterInput{Timezone: &tz}); !errors.Is(err, service.ErrInvalid) {
+			t.Errorf("timezone %q = %v, want ErrInvalid", blank, err)
+		}
+	}
+
+	var stored string
+	if err := pool.QueryRow(ctx, `SELECT timezone FROM donation_centers WHERE id = $1`, center).Scan(&stored); err != nil {
+		t.Fatalf("read timezone: %v", err)
+	}
+	if stored == "" {
+		t.Error("a blank timezone reached the column")
+	}
+}
+
+// Deactivating the DEFAULT centre must stop requests that name no centre.
+//
+// The guard skipped the check whenever `center_id` was absent — but the insert
+// defaults an absent one to MAIN, so deactivating MAIN stopped nothing. A donor
+// posting `{}` is the commonest request there is.
+func TestWI24_ClosingTheDefaultCentreStopsRequestsThatNameNoCentre(t *testing.T) {
+	centers, requests, pool := centerSetup(t)
+	ctx := context.Background()
+	center := testsupport.CenterID(t, pool)
+
+	closed := false
+	if _, err := centers.Update(ctx, center, service.CenterInput{IsActive: &closed}); err != nil {
+		t.Fatalf("deactivate: %v", err)
+	}
+
+	donorID := newAdultDonor(t, pool, "nocentre@example.test")
+	if _, err := requests.Create(ctx, service.CreateRequestParams{DonorID: donorID}); !errors.Is(err, service.ErrConflict) {
+		t.Fatalf("a request naming no centre was accepted against a closed default: %v", err)
+	}
+	if n := testsupport.CountRows(t, pool, `SELECT count(*) FROM donation_requests WHERE donor_id = $1`, donorID); n != 0 {
+		t.Errorf("%d request(s) created against a closed centre", n)
+	}
+}
+
+// Rescheduling must land in a real slot and take a free seat there.
+//
+// It used to write the caller's raw timestamp and keep the old seat number.
+// Three failures followed: an off-grid time became its own slot no capacity rule
+// could see; a move onto a taken seat raised 23505 as a 500; and a seat above a
+// since-reduced capacity tripped the trigger, also a 500.
+func TestWI24_ReschedulingReallocatesTheSeatAndSnapsToTheGrid(t *testing.T) {
+	_, requests, pool := centerSetup(t)
+	ctx := context.Background()
+	center := testsupport.CenterID(t, pool)
+	setCapacity(t, pool, center, 2)
+	q := store.New(pool)
+	appts := service.NewAppointmentService(pool, q, service.NewCenterService(q))
+
+	loc, err := time.LoadLocation("Africa/Douala")
+	if err != nil {
+		t.Skipf("no tzdata: %v", err)
+	}
+	day := time.Now().In(loc).AddDate(0, 0, 20)
+	at := func(h, m int) time.Time {
+		return time.Date(day.Year(), day.Month(), day.Day(), h, m, 0, 0, loc)
+	}
+
+	book := func(email string, when time.Time) int32 {
+		t.Helper()
+		donorID := newAdultDonor(t, pool, email)
+		row, err := requests.Create(ctx, service.CreateRequestParams{
+			DonorID: donorID, CenterID: &center, PreferredDate: &when,
+		})
+		if err != nil {
+			t.Fatalf("create for %s: %v", email, err)
+		}
+		appt, err := requests.Approve(ctx, row.ID, 1, service.AtTime(when), allow)
+		if err != nil {
+			t.Fatalf("approve for %s: %v", email, err)
+		}
+		return appt.ID
+	}
+
+	// Two appointments fill the 10:00 slot; one more sits at 11:00.
+	book("seatA@example.test", at(10, 0))
+	book("seatB@example.test", at(10, 0))
+	mover := book("mover@example.test", at(11, 0))
+
+	// An OFF-GRID destination is snapped, not accepted as its own slot.
+	if err := appts.Reschedule(ctx, mover, at(13, 7), allow); err != nil {
+		t.Fatalf("rescheduling to an off-grid time failed: %v", err)
+	}
+	var landed time.Time
+	if err := pool.QueryRow(ctx, `SELECT scheduled_at FROM appointments WHERE id = $1`, mover).Scan(&landed); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if got := landed.In(loc).Format("15:04"); got != "13:00" {
+		t.Errorf("13:07 landed at %s, want 13:00 — an off-grid slot is invisible to every capacity rule", got)
+	}
+
+	// Moving into the FULL 10:00 slot is a clean conflict, not a 500.
+	if err := appts.Reschedule(ctx, mover, at(10, 0), allow); !errors.Is(err, service.ErrConflict) {
+		t.Errorf("rescheduling into a full slot = %v, want ErrConflict", err)
+	}
+
+	// A slot with room takes it, and the seat is reallocated rather than carried.
+	book("seatC@example.test", at(14, 0)) // takes seat 1 at 14:00
+	if err := appts.Reschedule(ctx, mover, at(14, 0), allow); err != nil {
+		t.Fatalf("rescheduling into a slot with room failed: %v", err)
+	}
+	seats := testsupport.CountRows(t, pool, `
+		SELECT count(DISTINCT slot_seat) FROM appointments
+		 WHERE center_id = $1 AND scheduled_at = $2 AND status <> 'cancelled'`,
+		center, at(14, 0))
+	if seats != 2 {
+		t.Errorf("%d distinct seats at 14:00, want 2 — the seat was carried rather than reallocated", seats)
 	}
 }

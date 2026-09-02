@@ -317,6 +317,28 @@ _Resolved since this list was written:_ open CORS (now an explicit allowlist wit
   eligibility gate answers "were you eligible last Tuesday?" perfectly happily, so the request would
   have sat in the queue for a day staff cannot schedule. Refused in the service now, compared on the
   date so a same-day walk-in still books.
+
+  **The review found twelve defects in `WI-24`, two of them critical, and I had independently caught
+  two of those twelve while it ran.** Worth listing, because none of them broke a test:
+  the migration added `slot_seat NOT NULL DEFAULT 1` and then a unique index over it, which is
+  **unbuildable on any database with two appointments at one centre on one day** — every legacy row
+  sits at 09:00, so the migration would have failed and the API would never have started;
+  `SlotFor` inferred "the caller named a date" from an instant reading midnight in the centre's
+  timezone, but the handler produces midnight **UTC**, so at UTC+1 every approval at a centre with
+  configured hours returned 409 — the feature broke the moment an administrator used it;
+  `Reschedule` wrote the caller's raw timestamp and kept the old seat, so an off-grid time became a
+  slot no capacity rule could see, a taken seat became a 500, and a since-reduced capacity became
+  another 500;
+  the FR-14 closed-centre guard was skipped on the commonest request shape of all — a donor posting
+  `{}`, whose centre the insert defaults to `MAIN`;
+  `SlotsOn` had no fallback where `SlotFor` had one, so the shipped centre offered no slots while
+  booking at it worked; `{"timezone":""}` silently relocated a centre to UTC because
+  `LoadLocation("")` returns UTC without error; `?date=` resolved to the previous day west of UTC;
+  `{"mon": []}` collapsed to "unconfigured" and reopened a centre the administrator had closed;
+  `SlotsOn` could loop for ever on a non-positive slot length; `is_active` was dropped on create;
+  and centre pagination had no unique tiebreaker.
+  Every one is fixed with a test named for the defect, and the five substantive ones were each shown
+  to fail with their fix removed.
 - **2026-09-02** — **`WI-25` and `WI-26`: clinical policy becomes data, and `FR-19`'s deferral gate
   goes in. Plus the empty `policies` table nothing had noticed.**
 

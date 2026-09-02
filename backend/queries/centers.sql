@@ -18,7 +18,10 @@ SELECT id, code, name, address_line, city, region, phone, email,
 FROM donation_centers
 WHERE (sqlc.narg('active_only')::boolean IS NOT TRUE OR is_active)
   AND (sqlc.narg('region')::text IS NULL OR region = sqlc.narg('region')::text)
-ORDER BY is_active DESC, name
+-- `id` is the tiebreaker, and it is not decoration: two centres sharing a
+-- name have no defined order without it, so paging could show one twice and
+-- skip the other.
+ORDER BY is_active DESC, name, id
 LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
 
 -- name: GetCenter :one
@@ -28,14 +31,19 @@ FROM donation_centers WHERE id = $1;
 
 -- name: CreateCenter :one
 INSERT INTO donation_centers (code, name, address_line, city, region, phone, email,
-                              capacity_per_slot, slot_minutes, opening_hours, timezone)
+                              capacity_per_slot, slot_minutes, opening_hours, timezone, is_active)
 VALUES (
     sqlc.arg('code'), sqlc.arg('name'), sqlc.arg('address_line'),
     sqlc.arg('city'), sqlc.arg('region'), sqlc.narg('phone'), sqlc.narg('email'),
     COALESCE(sqlc.narg('capacity_per_slot')::smallint, 4),
     COALESCE(sqlc.narg('slot_minutes')::smallint, 30),
     COALESCE(sqlc.narg('opening_hours')::jsonb, '{}'::jsonb),
-    COALESCE(sqlc.narg('timezone')::text, 'Africa/Douala')
+    COALESCE(sqlc.narg('timezone')::text, 'Africa/Douala'),
+    -- Accepted on create, not dropped. `POST {"is_active": false}` used to
+    -- return 201 with `"is_active": true`, so a centre opened before anybody was
+    -- ready to staff it. Absent still means active, which is the sensible
+    -- default for a centre somebody just took the trouble to add.
+    COALESCE(sqlc.narg('is_active')::boolean, TRUE)
 )
 RETURNING id, code, name, address_line, city, region, phone, email,
           capacity_per_slot, slot_minutes, opening_hours, timezone, is_active;
@@ -77,3 +85,13 @@ WHERE a.center_id = sqlc.arg('center_id')
   AND a.scheduled_at <  sqlc.arg('to_at')::timestamptz
 GROUP BY a.scheduled_at
 ORDER BY a.scheduled_at;
+
+-- The centre a booking lands at when the caller names none.
+--
+-- `MAIN` by code, matching the `COALESCE` inside `CreateDonationRequest`. It is
+-- a query rather than a constant so the guard and the insert cannot disagree
+-- about which centre "the default" is — they already did once, and deactivating
+-- MAIN stopped nothing.
+--
+-- name: DefaultCenterID :one
+SELECT id FROM donation_centers WHERE code = 'MAIN';

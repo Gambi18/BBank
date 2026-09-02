@@ -349,3 +349,44 @@ every `daterange`. The domain clears on `ends_on`; migration 000018 drops the `+
 **Prevention:** a date boundary needs its inclusivity written down where the column is defined, not
 inferred at each call site. When two components implement one rule, a test that runs the same
 fixture through both is the only thing that keeps them honest — `TestTheViewAndTheDomainAgree`.
+
+### 2026-09-02 — Added a NOT NULL DEFAULT and a UNIQUE index in one migration
+**Cause:** `000019` added `slot_seat SMALLINT NOT NULL DEFAULT 1` and then created a unique index on
+`(center_id, scheduled_at, slot_seat)`. Every pre-existing appointment sits at a hardcoded 09:00
+(migration `000005`) and the only uniqueness on the table is per *donor* per day — so two donors at
+one centre on one day are two rows with the same key, and both got seat 1.
+**Course:** the index would have been unbuildable on any database with data. `CREATE UNIQUE INDEX`
+fails, the migration rolls back, the `migrate` compose service exits non-zero and the API never
+starts. The test suite could not see it: migrations run once, against an empty database.
+**Solution:** add the column nullable, backfill with `row_number() OVER (PARTITION BY center_id,
+scheduled_at)`, then `SET NOT NULL` and build the index. The enforcing trigger is created **last**,
+because the backfill is itself an `UPDATE` it would fire on.
+**Prevention:** a defaulted column plus a uniqueness constraint over that column is a contradiction
+unless the data is unique already. When a migration adds both, ask what the existing rows look like
+— and remember the test database is empty, so "the migration test passes" says nothing about it.
+
+### 2026-09-02 — Inferred a caller's intent from a value that could not carry it
+**Cause:** `SlotFor` decided "the caller named a bare date, not a time" by checking whether the
+instant read 00:00 in the centre's timezone. The handler produces that instant with
+`time.Parse("2006-01-02", …)`, which is midnight **UTC** — 01:00 in Africa/Douala.
+**Course:** the inference never fired. Every approval at a centre with configured opening hours fell
+through to "01:00 is outside opening hours" and returned 409, so the feature broke the moment an
+administrator used it. Invisible in tests, because the seeded centre has no hours and the tests
+built their inputs in the centre's location directly.
+**Solution:** carry the intent explicitly — `service.OnDate(t)` and `service.AtTime(t)` — and rebuild
+a date-only value at the centre's own midnight.
+**Prevention:** when two callers mean different things by the same type, the difference has to be in
+the type, not recovered by inspecting the value. A heuristic that reads a timezone-dependent field
+is a heuristic that is wrong in some timezone — and the default one here was already that timezone.
+
+### 2026-09-02 — Two halves of one feature disagreed about the fallback
+**Cause:** a centre with no configured opening hours fell back to 09:00 in `SlotFor`, and to nothing
+at all in `SlotsOn` — the fallback lived in one of the two code paths.
+**Course:** on the shipped database, which has exactly that centre, a booking UI would show "no
+slots on any date" while approvals at the same centre succeeded. The test passed because it asserted
+a 200 and an envelope on an empty list.
+**Solution:** synthesise the fallback as real opening hours once, in `effective()`, so both paths
+read the same object. Widened to a working day rather than a single slot, because a one-slot
+fallback silently removed the ability to reschedule into the afternoon.
+**Prevention:** a default belongs to the data, not to a code path. If two functions need the same
+fallback, build it into the value they both read — the third caller will not remember either.

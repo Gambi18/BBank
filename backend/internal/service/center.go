@@ -83,18 +83,73 @@ func (s *CenterService) SchedulingWith(ctx context.Context, q *store.Queries, ce
 // so it stays in Go rather than in `policies`.
 const LegacyOpeningClock = 9 * 60
 
-// SlotFor resolves the instant an appointment should be booked at.
+// LegacyClosingClock ends the fallback day at 17:00 local.
 //
-// `at` may be a bare date (midnight) or a real time. A date means "the first
-// slot that day"; a time is snapped down to the centre's slot grid. The result
-// is what goes in `scheduled_at`, and `scheduled_at` IS the slot — see migration
-// 000019.
-func (s *CenterService) SlotFor(ctx context.Context, centerID int64, at time.Time) (time.Time, error) {
-	return s.SlotForWith(ctx, s.q, centerID, at)
+// The fallback has to be a WORKING DAY, not a single slot. A one-slot fallback
+// looked tidy — approvals land at 09:00 exactly as they always did — but it also
+// made 09:00 the only bookable minute, so rescheduling an appointment to the
+// afternoon at a centre nobody had configured came back "outside opening
+// hours". That is a capability the system had before `WI-24` and has no reason
+// to lose to a default.
+//
+// 09:00-17:00 is an operational guess, and an explicitly replaceable one: the
+// moment an administrator sets real hours, none of this runs. It is not a
+// clinical constant, so it belongs in Go rather than in `policies`.
+const LegacyClosingClock = 17 * 60
+
+// BookingTime is when a caller wants an appointment, and whether they named a
+// DAY or an INSTANT.
+//
+// The distinction has to be carried explicitly, because it cannot be recovered
+// from the value. `time.Parse("2006-01-02", "2026-09-03")` returns midnight
+// **UTC**, and the first version of this inferred "the caller named a bare date"
+// from `at.In(centre.Location)` reading 00:00 — which for Africa/Douala (UTC+1)
+// is 01:00, so the inference never fired. Every approval at a centre with real
+// opening hours fell through to "01:00 is outside opening hours" and returned a
+// 409. The feature was unusable the moment an administrator configured hours,
+// and no test saw it because the seeded centre has none.
+type BookingTime struct {
+	At time.Time
+	// DateOnly says the caller named a calendar date and no time. The date is
+	// read from `At`'s Y/M/D and rebuilt in the CENTRE's location, so a centre
+	// west of UTC does not get yesterday's slots.
+	DateOnly bool
+}
+
+// OnDate is a caller who named a day.
+func OnDate(t time.Time) BookingTime { return BookingTime{At: t, DateOnly: true} }
+
+// AtTime is a caller who named an instant.
+func AtTime(t time.Time) BookingTime { return BookingTime{At: t} }
+
+// effective applies the legacy fallback, so every caller sees the SAME slots.
+//
+// In one place, deliberately. `SlotFor` fell back to 09:00 while `SlotsOn`
+// returned nothing, so on the shipped database a booking UI showed "no slots on
+// any date" while approvals at that same centre succeeded at 09:00 — the two
+// halves of one feature disagreeing, which is the failure this codebase keeps
+// re-learning. Synthesising the fallback as real opening hours means there is
+// only one code path to be right.
+func effective(sched domain.Scheduling) domain.Scheduling {
+	if sched.OpeningHours.Configured() {
+		return sched
+	}
+	open, close := domain.Clock(LegacyOpeningClock), domain.Clock(LegacyClosingClock)
+	hours := make(domain.OpeningHours, 7)
+	for _, day := range []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"} {
+		hours[day] = []domain.Interval{{Start: open, End: close}}
+	}
+	sched.OpeningHours = hours
+	return sched
+}
+
+// SlotFor resolves the instant an appointment should be booked at.
+func (s *CenterService) SlotFor(ctx context.Context, centerID int64, when BookingTime) (time.Time, error) {
+	return s.SlotForWith(ctx, s.q, centerID, when)
 }
 
 // SlotForWith resolves it on the caller's queries. See SchedulingWith.
-func (s *CenterService) SlotForWith(ctx context.Context, q *store.Queries, centerID int64, at time.Time) (time.Time, error) {
+func (s *CenterService) SlotForWith(ctx context.Context, q *store.Queries, centerID int64, when BookingTime) (time.Time, error) {
 	sched, active, err := s.SchedulingWith(ctx, q, centerID)
 	if err != nil {
 		return time.Time{}, err
@@ -102,31 +157,31 @@ func (s *CenterService) SlotForWith(ctx context.Context, q *store.Queries, cente
 	if !active {
 		return time.Time{}, fmt.Errorf("%w: %s", ErrConflict, ErrCenterInactive)
 	}
+	sched = effective(sched)
 
-	if !sched.OpeningHours.Configured() {
-		// Nobody has set hours. Fall back to the historical 09:00 rather than
-		// refusing every booking at a centre that worked yesterday — an unset
-		// column is an administrative gap, not a decision to close.
-		local := at.In(sched.Location)
-		y, m, d := local.Date()
-		return time.Date(y, m, d, LegacyOpeningClock/60, LegacyOpeningClock%60, 0, 0, sched.Location), nil
-	}
-
-	local := at.In(sched.Location)
-	if local.Hour() == 0 && local.Minute() == 0 && local.Second() == 0 {
-		// A bare date. The caller named a day, not a time.
-		slot, err := sched.FirstSlotOn(local)
+	if when.DateOnly {
+		// The calendar date the caller wrote, rebuilt at the centre's midnight.
+		y, m, d := when.At.Date()
+		day := time.Date(y, m, d, 0, 0, 0, 0, sched.Location)
+		slot, err := sched.FirstSlotOn(day)
 		if err != nil {
 			return time.Time{}, fmt.Errorf("%w: %s", ErrConflict, err.Error())
 		}
 		return slot, nil
 	}
 
-	slot, err := sched.SlotStart(local)
+	slot, err := sched.SlotStart(when.At.In(sched.Location))
 	if err != nil {
 		return time.Time{}, fmt.Errorf("%w: %s", ErrConflict, err.Error())
 	}
 	return slot, nil
+}
+
+// LocalDay rebuilds a calendar date at a centre's midnight, for a caller that
+// parsed `?date=YYYY-MM-DD` and therefore holds midnight UTC.
+func (s *CenterService) LocalDay(sched domain.Scheduling, date time.Time) time.Time {
+	y, m, d := date.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, sched.Location)
 }
 
 type ListCenterParams struct {
@@ -191,7 +246,7 @@ func (s *CenterService) Create(ctx context.Context, in CenterInput) (store.Creat
 		AddressLine: in.AddressLine, City: in.City, Region: in.Region,
 		Phone: in.Phone, Email: in.Email,
 		CapacityPerSlot: in.CapacityPerSlot, SlotMinutes: in.SlotMinutes,
-		OpeningHours: in.OpeningHours, Timezone: in.Timezone,
+		OpeningHours: in.OpeningHours, Timezone: in.Timezone, IsActive: in.IsActive,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -250,6 +305,14 @@ func (in CenterInput) validate(creating bool) error {
 		}
 	}
 	if in.Timezone != nil {
+		// Blank is rejected rather than ignored. `time.LoadLocation("")` returns
+		// UTC with no error, and `COALESCE(''::text, timezone)` writes the empty
+		// string rather than leaving the column alone — so `{"timezone": ""}`
+		// silently relocated a centre to UTC and shifted every slot by its real
+		// offset, with no diagnostic anywhere.
+		if strings.TrimSpace(*in.Timezone) == "" {
+			return fmt.Errorf("%w: timezone cannot be blank", ErrInvalid)
+		}
 		if _, err := time.LoadLocation(*in.Timezone); err != nil {
 			return fmt.Errorf("%w: %q is not a known timezone", ErrInvalid, *in.Timezone)
 		}
@@ -276,9 +339,13 @@ func (s *CenterService) SlotOccupancy(ctx context.Context, centerID int64, day t
 	if err != nil {
 		return nil, sched, err
 	}
-	local := day.In(sched.Location)
-	y, m, d := local.Date()
-	from := time.Date(y, m, d, 0, 0, 0, 0, sched.Location)
+	// The same effective hours booking uses, so the slots a UI offers are the
+	// slots an approval will accept.
+	sched = effective(sched)
+	// The caller parsed `?date=` into midnight UTC, so the day is taken from its
+	// Y/M/D and rebuilt at the centre's midnight. Using the instant would give a
+	// centre west of UTC the previous day's slots.
+	from := s.LocalDay(sched, day)
 
 	rows, err := s.q.SlotOccupancyOn(ctx, store.SlotOccupancyOnParams{
 		CenterID: centerID,

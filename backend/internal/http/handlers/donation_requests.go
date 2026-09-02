@@ -224,7 +224,12 @@ func (h *DonationRequestHandler) approve(w http.ResponseWriter, r *http.Request)
 	}
 
 	caller, _ := middleware.IdentityFrom(r.Context())
-	appt, err := h.svc.Approve(r.Context(), id, caller.UserID, date, permitFunc(r))
+	// `OnDate`, not the raw instant. `time.Parse("2006-01-02", …)` yields
+	// midnight UTC, and the service has to know that the caller named a DAY —
+	// it rebuilds the date at the centre's own midnight. Passing the instant let
+	// a UTC+1 centre read it as 01:00 and refuse every approval as "outside
+	// opening hours".
+	appt, err := h.svc.Approve(r.Context(), id, caller.UserID, service.OnDate(date), permitFunc(r))
 	if err != nil {
 		writeServiceError(w, r, err)
 		return

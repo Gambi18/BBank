@@ -303,15 +303,39 @@ func (q *Queries) ListAppointments(ctx context.Context, arg ListAppointmentsPara
 }
 
 const rescheduleAppointment = `-- name: RescheduleAppointment :one
+WITH centre AS (
+    SELECT c.id, c.capacity_per_slot
+    FROM donation_centers c
+    JOIN appointments a ON a.center_id = c.id
+    WHERE a.id = $2
+),
+free AS (
+    SELECT gs.seat
+    FROM centre, generate_series(1, centre.capacity_per_slot) AS gs(seat)
+    WHERE NOT EXISTS (
+        SELECT 1 FROM appointments a
+         WHERE a.center_id    = centre.id
+           AND a.scheduled_at = $1::timestamptz
+           AND a.slot_seat    = gs.seat
+           AND a.status <> 'cancelled'
+           AND a.id <> $2
+    )
+    ORDER BY gs.seat
+    LIMIT 1
+)
 UPDATE appointments
-   SET scheduled_at = $2
-WHERE id = $1
-RETURNING id, donation_request_id, donor_id, center_id, status, scheduled_at
+   SET scheduled_at = $1::timestamptz,
+       slot_seat    = free.seat
+  FROM free
+WHERE appointments.id = $2
+RETURNING appointments.id, appointments.donation_request_id, appointments.donor_id,
+          appointments.center_id, appointments.status, appointments.scheduled_at,
+          appointments.slot_seat
 `
 
 type RescheduleAppointmentParams struct {
-	ID          int32
 	ScheduledAt pgtype.Timestamptz
+	ID          int32
 }
 
 type RescheduleAppointmentRow struct {
@@ -321,10 +345,23 @@ type RescheduleAppointmentRow struct {
 	CenterID          int64
 	Status            AppointmentStatus
 	ScheduledAt       pgtype.Timestamptz
+	SlotSeat          int16
 }
 
+// Moves an appointment to another slot AND REALLOCATES ITS SEAT (WI-24).
+//
+// Keeping the old seat number was wrong three ways. A move onto a time where
+// that seat is already live raised 23505 — a 500, not a 409. A move where the
+// seat happened to be free succeeded regardless of how full the destination was,
+// because nothing recounted. And an appointment carrying a seat above the
+// centre's current capacity tripped the trigger on an otherwise legal move.
+//
+// The seat is chosen the same way the initial booking chooses one, excluding
+// THIS appointment from what counts as taken so a move within the same slot does
+// not collide with itself. Empty means the destination is full, which `:one`
+// turns into pgx.ErrNoRows for the service to report as a conflict.
 func (q *Queries) RescheduleAppointment(ctx context.Context, arg RescheduleAppointmentParams) (RescheduleAppointmentRow, error) {
-	row := q.db.QueryRow(ctx, rescheduleAppointment, arg.ID, arg.ScheduledAt)
+	row := q.db.QueryRow(ctx, rescheduleAppointment, arg.ScheduledAt, arg.ID)
 	var i RescheduleAppointmentRow
 	err := row.Scan(
 		&i.ID,
@@ -333,6 +370,7 @@ func (q *Queries) RescheduleAppointment(ctx context.Context, arg RescheduleAppoi
 		&i.CenterID,
 		&i.Status,
 		&i.ScheduledAt,
+		&i.SlotSeat,
 	)
 	return i, err
 }

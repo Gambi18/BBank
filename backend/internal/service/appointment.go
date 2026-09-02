@@ -18,10 +18,16 @@ import (
 type AppointmentService struct {
 	pool *pgxpool.Pool
 	q    *store.Queries
+	// centers resolves the slot a reschedule lands in (WI-24). A hard
+	// dependency: a move that skips the grid is a move no capacity rule sees.
+	centers *CenterService
 }
 
-func NewAppointmentService(pool *pgxpool.Pool, q *store.Queries) *AppointmentService {
-	return &AppointmentService{pool: pool, q: q}
+func NewAppointmentService(pool *pgxpool.Pool, q *store.Queries, centers *CenterService) *AppointmentService {
+	if centers == nil {
+		panic("appointment service requires a centre service (FR-14)")
+	}
+	return &AppointmentService{pool: pool, q: q, centers: centers}
 }
 
 type ListAppointmentParams struct {
@@ -92,8 +98,27 @@ func (s *AppointmentService) Cancel(ctx context.Context, id int32, reason string
 	})
 }
 
-// Reschedule moves an appointment to a new time before it starts (FR-11).
+// Reschedule moves an appointment to a new time before it starts (FR-11), into
+// a real slot with a real seat (WI-24).
+//
+// Retried on a seat collision for the same reason approval is, and at the same
+// level: a unique violation aborts its transaction, so there is no retrying the
+// update from inside one.
 func (s *AppointmentService) Reschedule(ctx context.Context, id int32, to time.Time, permits func(ownerID, centerID int64) bool) error {
+	var err error
+	for attempt := 0; attempt < AppointmentSeatRetries; attempt++ {
+		err = s.rescheduleOnce(ctx, id, to, permits)
+		if err == nil {
+			return nil
+		}
+		if !isUniqueViolationOn(err, "appointments_one_per_slot_seat") {
+			return err
+		}
+	}
+	return fmt.Errorf("%w: that slot is full", ErrConflict)
+}
+
+func (s *AppointmentService) rescheduleOnce(ctx context.Context, id int32, to time.Time, permits func(ownerID, centerID int64) bool) error {
 	return s.mutate(ctx, id, permits, func(q *store.Queries, appt store.GetAppointmentForUpdateRow) error {
 		now := time.Now()
 		if err := domain.CanReschedule(domain.AppointmentStatus(appt.Status), appt.ScheduledAt.Time, now); err != nil {
@@ -102,10 +127,39 @@ func (s *AppointmentService) Reschedule(ctx context.Context, id int32, to time.T
 		if err := domain.ValidateNewSlot(to, now); err != nil {
 			return fmt.Errorf("%w: %s", ErrInvalid, err.Error())
 		}
-		_, err := q.RescheduleAppointment(ctx, store.RescheduleAppointmentParams{
-			ID: id, ScheduledAt: pgtype.Timestamptz{Time: to, Valid: true},
+
+		// The destination must be a real slot on the centre's grid.
+		//
+		// Without this, an off-grid time — 09:07 with 30-minute slots — became
+		// its own slot that no capacity rule could see, so a full 09:00 slot was
+		// over-filled by rescheduling into it, and the appointment then vanished
+		// from `SlotOccupancyOn`'s grouping so the slots endpoint over-reported
+		// availability. The whole capacity mechanism rests on `scheduled_at`
+		// being a slot start.
+		slot, err := s.centers.SlotForWith(ctx, q, appt.CenterID, AtTime(to))
+		if err != nil {
+			return err
+		}
+
+		_, err = q.RescheduleAppointment(ctx, store.RescheduleAppointmentParams{
+			ID: id, ScheduledAt: pgtype.Timestamptz{Time: slot, Valid: true},
 		})
-		return err
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: every seat in that slot is taken", ErrConflict)
+		}
+		if err != nil {
+			// A seat collision is a lost race the caller retries; anything else
+			// the trigger raises — a seat above a capacity that was since
+			// lowered — is a conflict the caller can act on, not a 500.
+			if isUniqueViolationOn(err, "appointments_one_per_slot_seat") {
+				return err
+			}
+			if isCheckViolation(err) {
+				return fmt.Errorf("%w: that slot cannot take this appointment", ErrConflict)
+			}
+			return err
+		}
+		return nil
 	})
 }
 

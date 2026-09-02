@@ -45,7 +45,7 @@ func TestApproveKeepsTheRequestAndLinksTheAppointment(t *testing.T) {
 	staffID := testsupport.NewStaff(t, pool, "staff@example.test", center)
 	reqID := testsupport.NewPendingRequest(t, pool, donorID, center)
 
-	appt, err := svc.Approve(context.Background(), reqID, staffID, time.Now().AddDate(0, 0, 14), allow)
+	appt, err := svc.Approve(context.Background(), reqID, staffID, service.OnDate(time.Now().AddDate(0, 0, 14)), allow)
 	if err != nil {
 		t.Fatalf("approve: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestConcurrentApprovalsCreateExactlyOneAppointment(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start // release them together, to actually contend
-			_, err := svc.Approve(context.Background(), reqID, staffID, time.Now().AddDate(0, 0, 14), allow)
+			_, err := svc.Approve(context.Background(), reqID, staffID, service.OnDate(time.Now().AddDate(0, 0, 14)), allow)
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -197,7 +197,7 @@ func TestDecidedRequestsCannotBeDecidedAgain(t *testing.T) {
 	t.Run("approved cannot be rejected", func(t *testing.T) {
 		donorID := testsupport.NewDonor(t, pool, "t1@example.test", "T One")
 		reqID := testsupport.NewPendingRequest(t, pool, donorID, center)
-		if _, err := svc.Approve(ctx, reqID, staffID, time.Now().AddDate(0, 0, 7), allow); err != nil {
+		if _, err := svc.Approve(ctx, reqID, staffID, service.OnDate(time.Now().AddDate(0, 0, 7)), allow); err != nil {
 			t.Fatalf("setup approve: %v", err)
 		}
 		err := svc.Reject(ctx, reqID, staffID, domain.ReasonCenterClosed, "", allow)
@@ -212,7 +212,7 @@ func TestDecidedRequestsCannotBeDecidedAgain(t *testing.T) {
 		if err := svc.Reject(ctx, reqID, staffID, domain.ReasonCenterAtCapacity, "", allow); err != nil {
 			t.Fatalf("setup reject: %v", err)
 		}
-		_, err := svc.Approve(ctx, reqID, staffID, time.Now().AddDate(0, 0, 7), allow)
+		_, err := svc.Approve(ctx, reqID, staffID, service.OnDate(time.Now().AddDate(0, 0, 7)), allow)
 		if !errors.Is(err, service.ErrConflict) {
 			t.Fatalf("approving a rejected request = %v, want ErrConflict", err)
 		}
@@ -228,7 +228,7 @@ func TestDecidedRequestsCannotBeDecidedAgain(t *testing.T) {
 		if err := svc.Cancel(ctx, reqID, donorID, allow); err != nil {
 			t.Fatalf("setup cancel: %v", err)
 		}
-		if _, err := svc.Approve(ctx, reqID, staffID, time.Now().AddDate(0, 0, 7), allow); !errors.Is(err, service.ErrConflict) {
+		if _, err := svc.Approve(ctx, reqID, staffID, service.OnDate(time.Now().AddDate(0, 0, 7)), allow); !errors.Is(err, service.ErrConflict) {
 			t.Fatalf("approving a cancelled request = %v, want ErrConflict", err)
 		}
 	})
@@ -286,7 +286,7 @@ func TestApproveOutsideScopeIsNotFound(t *testing.T) {
 	reqID := testsupport.NewPendingRequest(t, pool, donorID, other)
 
 	deny := func(int64, int64) bool { return false }
-	_, err := svc.Approve(context.Background(), reqID, staffID, time.Now().AddDate(0, 0, 7), deny)
+	_, err := svc.Approve(context.Background(), reqID, staffID, service.OnDate(time.Now().AddDate(0, 0, 7)), deny)
 	if !errors.Is(err, service.ErrNotFound) {
 		t.Fatalf("approving out of scope = %v, want ErrNotFound (403 would confirm it exists)", err)
 	}
@@ -335,7 +335,7 @@ func TestAppointmentListScopeAndFilter(t *testing.T) {
 	pool := testsupport.Pool(t)
 	q := store.New(pool)
 	reqSvc := service.NewDonationRequestService(pool, q, eligFor(pool, q), service.NewCenterService(q))
-	apptSvc := service.NewAppointmentService(pool, q)
+	apptSvc := service.NewAppointmentService(pool, q, service.NewCenterService(q))
 	ctx := context.Background()
 
 	center := testsupport.CenterID(t, pool)
@@ -345,7 +345,7 @@ func TestAppointmentListScopeAndFilter(t *testing.T) {
 
 	for _, d := range []int64{donorA, donorB} {
 		reqID := testsupport.NewPendingRequest(t, pool, d, center)
-		if _, err := reqSvc.Approve(ctx, reqID, staffID, time.Now().AddDate(0, 0, 10), allow); err != nil {
+		if _, err := reqSvc.Approve(ctx, reqID, staffID, service.OnDate(time.Now().AddDate(0, 0, 10)), allow); err != nil {
 			t.Fatalf("approve for donor %d: %v", d, err)
 		}
 	}
@@ -382,7 +382,7 @@ func TestGetAppointmentAndRequestNotFound(t *testing.T) {
 	pool := testsupport.Pool(t)
 	q := store.New(pool)
 
-	if _, err := service.NewAppointmentService(pool, q).Get(context.Background(), 999999); !errors.Is(err, service.ErrNotFound) {
+	if _, err := service.NewAppointmentService(pool, q, service.NewCenterService(q)).Get(context.Background(), 999999); !errors.Is(err, service.ErrNotFound) {
 		t.Errorf("missing appointment = %v, want ErrNotFound", err)
 	}
 	if _, err := service.NewDonationRequestService(pool, q, eligFor(pool, q), service.NewCenterService(q)).Get(context.Background(), 999999); !errors.Is(err, service.ErrNotFound) {
@@ -398,7 +398,7 @@ func TestGetAppointmentAndRequestNotFound(t *testing.T) {
 func TestNoShowSweepIsIdempotentAndCreatesNoDeferral(t *testing.T) {
 	pool := testsupport.Pool(t)
 	q := store.New(pool)
-	svc := service.NewAppointmentService(pool, q)
+	svc := service.NewAppointmentService(pool, q, service.NewCenterService(q))
 	ctx := context.Background()
 
 	center := testsupport.CenterID(t, pool)
@@ -448,7 +448,8 @@ func TestNoShowSweepIsIdempotentAndCreatesNoDeferral(t *testing.T) {
 // FR-11: cancelling frees the slot, and only before the appointment starts.
 func TestCancelAndRescheduleBoundaries(t *testing.T) {
 	pool := testsupport.Pool(t)
-	svc := service.NewAppointmentService(pool, store.New(pool))
+	q := store.New(pool)
+	svc := service.NewAppointmentService(pool, q, service.NewCenterService(q))
 	ctx := context.Background()
 	center := testsupport.CenterID(t, pool)
 
@@ -491,7 +492,21 @@ func TestCancelAndRescheduleBoundaries(t *testing.T) {
 	t.Run("reschedule into the future", func(t *testing.T) {
 		d := testsupport.NewDonor(t, pool, "moveme@example.test", "Move Me")
 		id := mkAppt(t, pool, d, center, "5 days", "scheduled")
-		to := time.Now().Add(10 * 24 * time.Hour).Truncate(time.Second)
+
+		// A time the centre is OPEN, and on the slot grid.
+		//
+		// This used to be `time.Now().Add(10 days)`, which carries whatever
+		// time of day the suite happens to run at — 03:36 on the run that
+		// caught this. Since WI-24 a reschedule lands in a real slot, so a
+		// 03:36 destination is correctly refused; the fixture, not the rule,
+		// was what needed fixing.
+		loc, err := time.LoadLocation("Africa/Douala")
+		if err != nil {
+			t.Skipf("no tzdata: %v", err)
+		}
+		day := time.Now().In(loc).AddDate(0, 0, 10)
+		to := time.Date(day.Year(), day.Month(), day.Day(), 10, 30, 0, 0, loc)
+
 		if err := svc.Reschedule(ctx, id, to, allow); err != nil {
 			t.Fatalf("reschedule: %v", err)
 		}

@@ -111,7 +111,7 @@ func TestApprovalReGatesAgainstTheScheduledDate(t *testing.T) {
 	// Staff approve it for tomorrow — 31 days after the donation, well inside
 	// the interval.
 	tooSoon := time.Now().AddDate(0, 0, 1)
-	if _, err := requests.Approve(ctx, row.ID, 1, tooSoon, allow); err == nil {
+	if _, err := requests.Approve(ctx, row.ID, 1, service.OnDate(tooSoon), allow); err == nil {
 		t.Fatal("an appointment was scheduled 31 days after a donation, inside the 56-day interval")
 	} else if e, ok := service.AsIneligible(err); !ok {
 		t.Fatalf("approve returned %v, want ErrIneligible", err)
@@ -120,7 +120,7 @@ func TestApprovalReGatesAgainstTheScheduledDate(t *testing.T) {
 	}
 
 	// The honest date still works, and the request survives the refused attempt.
-	if _, err := requests.Approve(ctx, row.ID, 1, preferred, allow); err != nil {
+	if _, err := requests.Approve(ctx, row.ID, 1, service.OnDate(preferred), allow); err != nil {
 		t.Fatalf("approving for the requested date failed: %v", err)
 	}
 }
@@ -143,7 +143,7 @@ func TestApprovalSeesADeferralRecordedAfterTheRequest(t *testing.T) {
 	// A screening the next day records a deferral covering the appointment.
 	deferUntil(t, pool, donorID, time.Now().AddDate(0, 0, 30))
 
-	if _, err := requests.Approve(ctx, row.ID, 1, preferred, allow); err == nil {
+	if _, err := requests.Approve(ctx, row.ID, 1, service.OnDate(preferred), allow); err == nil {
 		t.Fatal("a deferral recorded after the request was invisible at approval")
 	} else if e, ok := service.AsIneligible(err); !ok {
 		t.Fatalf("approve returned %v, want ErrIneligible", err)
@@ -300,7 +300,7 @@ func TestTheApprovalGateDoesNotHoldTwoConnections(t *testing.T) {
 	for _, b := range bookings {
 		go func(b booking) {
 			<-start
-			_, err := requests.Approve(ctx, b.id, 1, b.schedule, allow)
+			_, err := requests.Approve(ctx, b.id, 1, service.OnDate(b.schedule), allow)
 			done <- err
 		}(b)
 	}

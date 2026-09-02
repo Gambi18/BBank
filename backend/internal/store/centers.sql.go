@@ -13,14 +13,19 @@ import (
 
 const createCenter = `-- name: CreateCenter :one
 INSERT INTO donation_centers (code, name, address_line, city, region, phone, email,
-                              capacity_per_slot, slot_minutes, opening_hours, timezone)
+                              capacity_per_slot, slot_minutes, opening_hours, timezone, is_active)
 VALUES (
     $1, $2, $3,
     $4, $5, $6, $7,
     COALESCE($8::smallint, 4),
     COALESCE($9::smallint, 30),
     COALESCE($10::jsonb, '{}'::jsonb),
-    COALESCE($11::text, 'Africa/Douala')
+    COALESCE($11::text, 'Africa/Douala'),
+    -- Accepted on create, not dropped. ` + "`" + `POST {"is_active": false}` + "`" + ` used to
+    -- return 201 with ` + "`" + `"is_active": true` + "`" + `, so a centre opened before anybody was
+    -- ready to staff it. Absent still means active, which is the sensible
+    -- default for a centre somebody just took the trouble to add.
+    COALESCE($12::boolean, TRUE)
 )
 RETURNING id, code, name, address_line, city, region, phone, email,
           capacity_per_slot, slot_minutes, opening_hours, timezone, is_active
@@ -38,6 +43,7 @@ type CreateCenterParams struct {
 	SlotMinutes     *int16
 	OpeningHours    []byte
 	Timezone        *string
+	IsActive        *bool
 }
 
 type CreateCenterRow struct {
@@ -69,6 +75,7 @@ func (q *Queries) CreateCenter(ctx context.Context, arg CreateCenterParams) (Cre
 		arg.SlotMinutes,
 		arg.OpeningHours,
 		arg.Timezone,
+		arg.IsActive,
 	)
 	var i CreateCenterRow
 	err := row.Scan(
@@ -87,6 +94,23 @@ func (q *Queries) CreateCenter(ctx context.Context, arg CreateCenterParams) (Cre
 		&i.IsActive,
 	)
 	return i, err
+}
+
+const defaultCenterID = `-- name: DefaultCenterID :one
+SELECT id FROM donation_centers WHERE code = 'MAIN'
+`
+
+// The centre a booking lands at when the caller names none.
+//
+// `MAIN` by code, matching the `COALESCE` inside `CreateDonationRequest`. It is
+// a query rather than a constant so the guard and the insert cannot disagree
+// about which centre "the default" is — they already did once, and deactivating
+// MAIN stopped nothing.
+func (q *Queries) DefaultCenterID(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, defaultCenterID)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
 }
 
 const getCenter = `-- name: GetCenter :one
@@ -179,7 +203,7 @@ SELECT id, code, name, address_line, city, region, phone, email,
 FROM donation_centers
 WHERE ($1::boolean IS NOT TRUE OR is_active)
   AND ($2::text IS NULL OR region = $2::text)
-ORDER BY is_active DESC, name
+ORDER BY is_active DESC, name, id
 LIMIT $4 OFFSET $3
 `
 
@@ -207,6 +231,9 @@ type ListCentersRow struct {
 	Total           int64
 }
 
+// `id` is the tiebreaker, and it is not decoration: two centres sharing a
+// name have no defined order without it, so paging could show one twice and
+// skip the other.
 func (q *Queries) ListCenters(ctx context.Context, arg ListCentersParams) ([]ListCentersRow, error) {
 	rows, err := q.db.Query(ctx, listCenters,
 		arg.ActiveOnly,

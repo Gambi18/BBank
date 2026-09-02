@@ -30,8 +30,38 @@
 -- same `scheduled_at`" are one thing. Without that, two appointments five
 -- minutes apart would be different slots and capacity would mean nothing.
 
+-- Added NULLABLE and backfilled before anything enforces it.
+--
+-- `NOT NULL DEFAULT 1` would have been wrong on any database with data in it.
+-- Every appointment created before this migration sits at a hardcoded 09:00
+-- (migration 000005), and the only uniqueness on the table is per DONOR per day
+-- (`appointments_one_active_per_donor_per_day`) — so two different donors booked
+-- at one centre on one day are two rows with the same `(center_id,
+-- scheduled_at)`. Giving them both seat 1 makes the unique index below
+-- unbuildable, and the migration fails on the first real database it meets.
+-- The test suite could not catch it: migrations run once against an empty
+-- database.
+ALTER TABLE appointments ADD COLUMN slot_seat SMALLINT;
+
+-- Number the live appointments within each existing slot. Cancelled ones are
+-- excluded from the index, so they can all sit at seat 1 without colliding.
+WITH numbered AS (
+    SELECT id, row_number() OVER (
+               PARTITION BY center_id, scheduled_at ORDER BY id
+           ) AS seat
+    FROM appointments
+    WHERE status <> 'cancelled'
+)
+UPDATE appointments a
+   SET slot_seat = numbered.seat
+  FROM numbered
+ WHERE a.id = numbered.id;
+
+UPDATE appointments SET slot_seat = 1 WHERE slot_seat IS NULL;
+
 ALTER TABLE appointments
-    ADD COLUMN slot_seat SMALLINT NOT NULL DEFAULT 1;
+    ALTER COLUMN slot_seat SET NOT NULL,
+    ALTER COLUMN slot_seat SET DEFAULT 1;
 
 ALTER TABLE appointments
     ADD CONSTRAINT appointments_slot_seat_positive CHECK (slot_seat >= 1);
@@ -83,6 +113,19 @@ $$;
 -- On UPDATE OF the fields that decide which slot this is, as well as on INSERT:
 -- rescheduling moves an appointment into a different slot, and a move that
 -- over-fills the destination is the same defect arriving by a different route.
+-- Created LAST, after the backfill, deliberately.
+--
+-- The backfill is an UPDATE of `slot_seat`, which this trigger fires on. An
+-- existing slot may already hold more appointments than the centre's capacity —
+-- nothing enforced one before today — and those rows would be rejected by their
+-- own backfill, failing the migration to protect a rule that did not exist when
+-- they were booked.
+--
+-- Leaving them is the right answer and matches FR-14's "preserves history": the
+-- appointments people already have are kept, and the capacity governs the next
+-- booking. The one consequence is that RESCHEDULING such an appointment
+-- reallocates its seat in the destination slot (see RescheduleAppointment), so
+-- an over-capacity legacy row cannot carry its high seat number forward.
 CREATE TRIGGER appointments_enforce_slot_capacity
     BEFORE INSERT OR UPDATE OF center_id, scheduled_at, slot_seat ON appointments
     FOR EACH ROW EXECUTE FUNCTION enforce_slot_capacity();

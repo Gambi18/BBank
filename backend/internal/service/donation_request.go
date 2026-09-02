@@ -197,17 +197,23 @@ func (s *DonationRequestService) Create(ctx context.Context, p CreateRequestPara
 	// Resolved through the centre service rather than by reading `is_active`
 	// here, so "which centre" and "is it open" are one question with one answer —
 	// the two-paths-guessing-differently failure this codebase keeps re-learning.
-	centerID := int64(0)
-	if p.CenterID != nil {
-		centerID = *p.CenterID
+	// The DEFAULT centre is resolved first, because the guard has to cover the
+	// commonest request shape.
+	//
+	// A donor posts `{}`: no `center_id`, and the insert defaults it to `MAIN`.
+	// The first version skipped the check whenever the field was absent, so
+	// deactivating MAIN stopped nothing — the exact outcome the comment below
+	// claims it prevents.
+	centerID, err := s.resolveCenter(ctx, p.CenterID)
+	if err != nil {
+		return zero, err
 	}
-	if centerID != 0 {
-		if _, active, err := s.centers.Scheduling(ctx, centerID); err != nil {
-			return zero, err
-		} else if !active {
-			return zero, fmt.Errorf("%w: %s", ErrConflict, ErrCenterInactive)
-		}
+	if _, active, err := s.centers.Scheduling(ctx, centerID); err != nil {
+		return zero, err
+	} else if !active {
+		return zero, fmt.Errorf("%w: %s", ErrConflict, ErrCenterInactive)
 	}
+	p.CenterID = &centerID
 
 	policies, err := s.elig.Policies(ctx)
 	if err != nil {
@@ -344,7 +350,7 @@ func (s *DonationRequestService) gate(
 //
 // Rolling back also undoes the status transition, which is what makes retrying
 // safe: a failed attempt leaves the request `pending`, exactly as it found it.
-func (s *DonationRequestService) Approve(ctx context.Context, id int32, reviewerID int64, scheduled time.Time, permits func(ownerID, centerID int64) bool) (store.CreateAppointmentForRequestRow, error) {
+func (s *DonationRequestService) Approve(ctx context.Context, id int32, reviewerID int64, scheduled BookingTime, permits func(ownerID, centerID int64) bool) (store.CreateAppointmentForRequestRow, error) {
 	var appt store.CreateAppointmentForRequestRow
 
 	// Resolved before any transaction opens. Reading policy can hit the
@@ -374,7 +380,7 @@ func (s *DonationRequestService) approveOnce(
 	ctx context.Context,
 	id int32,
 	reviewerID int64,
-	scheduled time.Time,
+	scheduled BookingTime,
 	permits func(ownerID, centerID int64) bool,
 	policies *domain.Policies,
 ) (store.CreateAppointmentForRequestRow, error) {
@@ -446,12 +452,23 @@ func (s *DonationRequestService) approveOnce(
 		CreatedBy:         &reviewerID,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		// The seat query found nothing free. Not an error in the query — the
-		// slot is full, which is a real answer a person can act on by choosing
-		// another time.
+		// Nothing came back. Two causes, and they deserve different sentences:
+		// the slot is full, or the centre was deactivated between SlotForWith
+		// checking it a few lines up and this insert running. The second is a
+		// narrow race, and telling somebody "that slot is full" when the centre
+		// has closed sends them to try another time at a shut building.
+		if _, active, checkErr := s.centers.SchedulingWith(ctx, q, req.CenterID); checkErr == nil && !active {
+			return appt, fmt.Errorf("%w: %s", ErrConflict, ErrCenterInactive)
+		}
 		return appt, fmt.Errorf("%w: every seat in that slot is taken", ErrConflict)
 	}
 	if err != nil {
+		// The trigger's refusals — a seat above capacity, an insert at a closed
+		// centre — arrive as check_violation. They are conflicts a caller can
+		// act on, not the 500 they used to produce.
+		if isCheckViolation(err) {
+			return appt, fmt.Errorf("%w: that slot cannot take this appointment", ErrConflict)
+		}
 		if isUniqueViolation(err) {
 			// Two different unique indexes can fire here. One-appointment-per-
 			// request is final; a seat collision is retryable, so it is returned
@@ -533,4 +550,24 @@ func (s *DonationRequestService) decide(
 		return fmt.Errorf("update request %d: %w", id, err)
 	}
 	return tx.Commit(ctx)
+}
+
+// resolveCenter turns an optional centre id into the one that will actually be
+// used.
+//
+// `CreateDonationRequest` defaults an absent `center_id` to the centre coded
+// `MAIN`, in SQL. Any guard that runs before the insert therefore has to resolve
+// the same default, or it guards a centre the row will not use.
+func (s *DonationRequestService) resolveCenter(ctx context.Context, requested *int64) (int64, error) {
+	if requested != nil && *requested != 0 {
+		return *requested, nil
+	}
+	id, err := s.q.DefaultCenterID(ctx)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, fmt.Errorf("%w: this deployment has no default donation centre", ErrInvalid)
+		}
+		return 0, fmt.Errorf("resolve the default centre: %w", err)
+	}
+	return id, nil
 }

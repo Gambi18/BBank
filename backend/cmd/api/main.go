@@ -208,7 +208,8 @@ const noShowSweepInterval = time.Hour
 // period ago, so whichever replica gets there first leaves nothing for the
 // others. That property is why this needs no leader election.
 func runNoShowSweep(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool) {
-	svc := service.NewAppointmentService(pool, store.New(pool))
+	q := store.New(pool)
+	svc := service.NewAppointmentService(pool, q, service.NewCenterService(q))
 
 	sweep := func() {
 		runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)

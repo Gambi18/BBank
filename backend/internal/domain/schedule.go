@@ -91,6 +91,15 @@ func ParseOpeningHours(raw []byte) (OpeningHours, error) {
 		if !knownDay(key) {
 			return nil, fmt.Errorf("%w: %q is not a weekday key (mon…sun)", ErrInvalidHours, day)
 		}
+		// The key is recorded even when the list is empty, so `{"mon": []}` is
+		// "explicitly closed on Monday" and the centre counts as CONFIGURED.
+		// Without this, an administrator who closes every day produces an empty
+		// map, `Configured()` says nobody has set hours, and the legacy 09:00
+		// fallback books donors on all seven — the exact opposite of what they
+		// wrote.
+		if _, seen := out[key]; !seen {
+			out[key] = []Interval{}
+		}
 		for _, span := range spans {
 			if len(span) != 2 {
 				return nil, fmt.Errorf("%w: %s has an interval that is not [open, close]", ErrInvalidHours, key)
@@ -193,6 +202,13 @@ func (s Scheduling) FirstSlotOn(day time.Time) (time.Time, error) {
 // SlotsOn lists every bookable slot start on a day. For a booking UI, and for
 // the capacity view.
 func (s Scheduling) SlotsOn(day time.Time) []time.Time {
+	// The same bound the other two enforce. Without it a non-positive
+	// `SlotMinutes` makes the loop below never advance — appending for ever —
+	// and a domain function must not depend on a database CHECK it cannot see
+	// to stay terminating.
+	if s.SlotMinutes < 5 || s.SlotMinutes > 240 {
+		return nil
+	}
 	local := day.In(s.Location)
 	var out []time.Time
 	for _, iv := range s.OpeningHours.On(local) {
