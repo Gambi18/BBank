@@ -32,6 +32,20 @@ type CreateDonationRequest struct {
 	CenterID      *int64  `json:"center_id,omitempty"`
 	PreferredDate *string `json:"preferred_date,omitempty"`
 	Notes         *string `json:"notes,omitempty"`
+
+	// Procedure selects which interval and annual cap apply. Absent means whole
+	// blood, matching the column default.
+	Procedure *string `json:"procedure,omitempty"`
+
+	// OverridePermanentDeferralReason books a permanently deferred donor anyway
+	// (`FR-19`).
+	//
+	// A REASON, not a boolean, and that is the design. A boolean can be sent by
+	// accident and says nothing afterwards; a reason cannot be supplied without
+	// someone deciding what to write, and it is what the audit entry records.
+	// The field is honoured only for an admin — for anyone else it is refused,
+	// not ignored, so an attempt is visible rather than silent.
+	OverridePermanentDeferralReason *string `json:"override_permanent_deferral_reason,omitempty"`
 }
 
 type ApproveDonationRequest struct {

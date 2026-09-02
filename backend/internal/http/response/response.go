@@ -61,6 +61,20 @@ type Error struct {
 	Message   string   `json:"message"`
 	Details   []Detail `json:"details,omitempty"`
 	RequestID string   `json:"request_id,omitempty"`
+
+	// NextEligibleOn is set on a clinical refusal that clears with time, as
+	// YYYY-MM-DD (WI-26).
+	//
+	// An addition to TRD §6.2's error object, and additive on purpose: it is
+	// omitted everywhere else, so no existing client sees a change. It exists
+	// because `FR-08` requires a blocked donor to be told "the date they become
+	// eligible", and that is a property of the whole refusal rather than of one
+	// entry in `details[]` — putting a date inside an `issue` string would make
+	// every client parse prose to find it.
+	//
+	// Absent means there is no such date: a permanent deferral or an age ceiling
+	// does not clear by waiting, and saying nothing is the honest answer.
+	NextEligibleOn *string `json:"next_eligible_on,omitempty"`
 }
 
 type errorEnvelope struct {
@@ -126,6 +140,21 @@ func Unprocessable(w http.ResponseWriter, r *http.Request, msg string, details .
 // did nothing wrong, the world said no, and clients branch on that difference.
 func Conflict(w http.ResponseWriter, r *http.Request, code, msg string, details ...Detail) {
 	Fail(w, r, http.StatusConflict, code, msg, details...)
+}
+
+// Ineligible is the 409 for a clinical refusal that may clear with time (FR-19).
+//
+// Separate from Conflict only because it carries `next_eligible_on`. `code` is
+// the failing criterion, so a client branches on the rule rather than on the
+// sentence — TRD §6.2: "clients branch on `code`, never on `message`".
+func Ineligible(w http.ResponseWriter, r *http.Request, code, msg string, nextEligibleOn *string, details ...Detail) {
+	JSON(w, http.StatusConflict, errorEnvelope{Error{
+		Code:           code,
+		Message:        msg,
+		Details:        details,
+		RequestID:      requestID(w, r),
+		NextEligibleOn: nextEligibleOn,
+	}})
 }
 
 func Unauthorized(w http.ResponseWriter, r *http.Request, msg string) {

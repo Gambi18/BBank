@@ -341,7 +341,7 @@ func (h *DonorHandler) eligibility(w http.ResponseWriter, r *http.Request) {
 		PermanentlyDeferred: derefBool(row.PermanentlyDeferred),
 		DeferredUntil:       anyDatePtr(row.DeferredUntil),
 		NextEligibleOn:      anyDatePtr(row.NextEligibleOn),
-		IsEligibleToday:     derefBool(row.IsEligibleToday),
+		IsEligibleToday:     anyBoolPtr(row.IsEligibleToday),
 		Reason:              row.Reason,
 	})
 }

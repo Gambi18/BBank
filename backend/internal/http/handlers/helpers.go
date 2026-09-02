@@ -22,6 +22,12 @@ import (
 // is a 500 whose detail goes to the log rather than to the caller.
 func writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	// Checked BEFORE ErrConflict, which ErrIneligible also matches. A clinical
+	// refusal flattened into a bare "conflict" loses the criterion the client
+	// branches on and the date the donor needs (FR-08, FR-19) — the whole reason
+	// the decision travels as a value rather than a string.
+	case isIneligible(err):
+		writeIneligible(w, r, err)
 	case errors.Is(err, service.ErrNotFound):
 		response.NotFound(w, r)
 	case errors.Is(err, service.ErrConflict):
@@ -32,6 +38,39 @@ func writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	default:
 		response.Internal(w, r, err)
 	}
+}
+
+func isIneligible(err error) bool {
+	_, ok := service.AsIneligible(err)
+	return ok
+}
+
+// writeIneligible renders an eligibility decision as the error envelope.
+//
+// `code` is the headline criterion, so a client branches on the RULE rather than
+// on the sentence (TRD §6.2). Every failing criterion appears in `details[]`,
+// because FR-17 requires each to be named individually — a donor who fails three
+// rules and is told about one will fix that one and be refused again.
+func writeIneligible(w http.ResponseWriter, r *http.Request, err error) {
+	e, _ := service.AsIneligible(err)
+	d := e.Decision
+
+	details := make([]response.Detail, 0, len(d.Failures))
+	for _, f := range d.Failures {
+		details = append(details, response.Detail{Field: string(f.Criterion), Issue: f.Message})
+	}
+
+	var next *string
+	if d.NextEligibleOn != nil {
+		s := d.NextEligibleOn.Format("2006-01-02")
+		next = &s
+	}
+
+	message := "This donor is not eligible to donate on that date."
+	if len(d.Failures) > 0 {
+		message = d.Failures[0].Message
+	}
+	response.Ineligible(w, r, string(d.Reason()), message, next, details...)
 }
 
 // cleanMessage strips the sentinel prefix the service wraps its messages with,

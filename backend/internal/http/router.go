@@ -96,8 +96,15 @@ func NewRouter(d Deps) http.Handler {
 	// Mounted before the authenticated router so chi matches the bare POST here.
 	r.Mount("/api/v1/register", donors.PublicRoutes(idem))
 
+	// WI-25 / WI-26: one policy resolver and one eligibility service, shared by
+	// every caller that needs a clinical decision. Shared deliberately — the
+	// resolver caches a policy snapshot, and two of them would mean two callers
+	// deciding under different numbers at the same moment.
+	policySvc := service.NewPolicyService(q)
+	eligSvc := service.NewEligibilityService(q, policySvc)
+
 	r.Mount("/api/v1/donation-requests",
-		handlers.NewDonationRequestHandler(service.NewDonationRequestService(d.Pool, q), idem).Routes())
+		handlers.NewDonationRequestHandler(service.NewDonationRequestService(d.Pool, q, eligSvc), idem).Routes())
 	r.Mount("/api/v1/appointments",
 		handlers.NewAppointmentHandler(service.NewAppointmentService(d.Pool, q), idem).Routes())
 

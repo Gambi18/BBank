@@ -49,6 +49,29 @@ func anyDatePtr(v any) *string {
 	return nil
 }
 
+// anyBoolPtr reads `is_eligible_today`, which became a CASE expression in
+// migration 000018 and so arrives as interface{} like the date columns above.
+//
+// nil is meaningful and is NOT false: it means the view could not decide,
+// because a clinical threshold has no active policy row. Collapsing that to
+// "ineligible" would state a clinical conclusion the system did not reach.
+func anyBoolPtr(v any) *bool {
+	switch b := v.(type) {
+	case nil:
+		return nil
+	case bool:
+		return &b
+	case *bool:
+		return b
+	case pgtype.Bool:
+		if !b.Valid {
+			return nil
+		}
+		return &b.Bool
+	}
+	return nil
+}
+
 func anyTimePtr(v any) *string {
 	switch t := v.(type) {
 	case nil:

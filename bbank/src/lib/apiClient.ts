@@ -26,6 +26,16 @@ export class ApiError extends Error {
         readonly code: string,
         message: string,
         readonly requestId?: string,
+        /**
+         * The date a clinical refusal clears, when it clears at all (WI-26).
+         *
+         * Absent for a permanent deferral or an age ceiling — those do not clear
+         * by waiting, and inventing a date would tell a permanently deferred
+         * donor to come back next month.
+         */
+        readonly nextEligibleOn?: string,
+        /** Every failing criterion, in the order the API ranked them (FR-17). */
+        readonly reasons: { criterion: string; message: string }[] = [],
     ) {
         super(message)
         this.name = 'ApiError'
@@ -36,6 +46,12 @@ export class ApiError extends Error {
     /** Signed in, but not allowed. Distinct from 404, which hides existence. */
     get isForbidden() { return this.status === 403 }
     get isNotFound() { return this.status === 404 }
+    /**
+     * A clinical refusal (FR-19): the request was fine, the donor is not
+     * eligible on that date. Distinct from any other 409, because the message is
+     * written to be shown to the donor as-is.
+     */
+    get isIneligible() { return this.status === 409 && this.reasons.length > 0 }
 }
 
 export interface Page { total: number; limit: number; offset: number }
@@ -49,7 +65,17 @@ interface Options {
     anonymous?: boolean
 }
 
-interface Envelope<T> { data?: T; page?: Page; error?: { code?: string; message?: string; request_id?: string } }
+interface ErrorBody {
+    code?: string
+    message?: string
+    request_id?: string
+    /** Set on a clinical refusal that clears with time (WI-26). YYYY-MM-DD. */
+    next_eligible_on?: string
+    /** One entry per failing criterion (FR-17). `field` is the criterion code. */
+    details?: { field?: string; issue?: string }[]
+}
+
+interface Envelope<T> { data?: T; page?: Page; error?: ErrorBody }
 
 async function request<T>(path: string, opts: Options = {}): Promise<{ data: T; page?: Page }> {
     const { method = 'GET', body, idempotencyKey, anonymous } = opts
@@ -106,6 +132,10 @@ async function request<T>(path: string, opts: Options = {}): Promise<{ data: T; 
             // a safe message. Never surface a raw driver error to a page.
             err?.message ?? (typeof parsed === 'string' ? parsed : res.statusText),
             err?.request_id,
+            err?.next_eligible_on,
+            (err?.details ?? [])
+                .filter((d) => d.field && d.issue)
+                .map((d) => ({ criterion: d.field as string, message: d.issue as string })),
         )
     }
 

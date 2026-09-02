@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"bbank/internal/domain"
@@ -40,10 +41,18 @@ type Scope struct {
 type DonationRequestService struct {
 	pool *pgxpool.Pool
 	q    *store.Queries
+	// elig is the FR-19 booking gate. It is a hard dependency rather than an
+	// optional one: a nil check here would be a way to construct a service that
+	// books without checking, and "the gate was not wired up in that path" is
+	// how a safety requirement becomes a changelog entry.
+	elig *EligibilityService
 }
 
-func NewDonationRequestService(pool *pgxpool.Pool, q *store.Queries) *DonationRequestService {
-	return &DonationRequestService{pool: pool, q: q}
+func NewDonationRequestService(pool *pgxpool.Pool, q *store.Queries, elig *EligibilityService) *DonationRequestService {
+	if elig == nil {
+		panic("donation request service requires an eligibility service (FR-19)")
+	}
+	return &DonationRequestService{pool: pool, q: q, elig: elig}
 }
 
 type ListRequestParams struct {
@@ -91,6 +100,14 @@ type CreateRequestParams struct {
 	CenterID      *int64
 	PreferredDate *time.Time
 	Notes         *string
+
+	// Procedure decides WHICH interval and annual cap apply. Empty means whole
+	// blood, matching the column default.
+	Procedure domain.Procedure
+
+	// Override is set only when an admin is deliberately booking a permanently
+	// deferred donor (FR-19). Nil for every ordinary booking.
+	Override *PermanentDeferralOverride
 }
 
 // Create books a donation request.
@@ -111,13 +128,45 @@ func (s *DonationRequestService) Create(ctx context.Context, p CreateRequestPara
 		return zero, fmt.Errorf("%w: this donor already has a pending request", ErrConflict)
 	}
 
-	var date pgtype.Date
+	// Resolve the date and the procedure ONCE, here, so the booking that is
+	// checked is the booking that is stored.
+	//
+	// The insert defaults an absent date to `CURRENT_DATE + 7`. When the gate
+	// defaulted to `time.Now()` instead, a donor whose interval elapsed in three
+	// days was refused for a request that would have been dated a week out and
+	// was perfectly valid — the gate answering a question about a different day
+	// from the one being booked.
+	on := time.Now().AddDate(0, 0, defaultBookingLeadDays)
 	if p.PreferredDate != nil {
-		date = pgtype.Date{Time: *p.PreferredDate, Valid: true}
+		on = *p.PreferredDate
+	}
+	proc := p.Procedure
+	if proc == "" {
+		proc = domain.ProcedureWholeBlood
 	}
 
+	// FR-19, gate 1: the deferral and interval block, enforced HERE rather than
+	// in the handler.
+	//
+	// Here, because the acceptance criterion is "the block cannot be bypassed by
+	// calling the API directly" — a check in the handler is bypassed by any
+	// second handler that calls this method, and there will be more of them
+	// (WI-39 check-in, WI-44 collection). The service is the narrowest waist
+	// every booking passes through.
+	policies, err := s.elig.Policies(ctx)
+	if err != nil {
+		return zero, err
+	}
+	if err := s.gate(ctx, s.q, policies, p.DonorID, proc, on, p.Override); err != nil {
+		return zero, err
+	}
+
+	date := pgtype.Date{Time: on, Valid: true}
+	storedProc := store.DonationProcedure(proc)
+
 	row, err := s.q.CreateDonationRequest(ctx, store.CreateDonationRequestParams{
-		DonorID: int32(p.DonorID), CenterID: p.CenterID, PreferredDate: date, Notes: p.Notes,
+		DonorID: int32(p.DonorID), CenterID: p.CenterID, PreferredDate: date,
+		Procedure: &storedProc, Notes: p.Notes,
 	})
 	if err != nil {
 		// The unique index is the real guard; losing the race is still a 409.
@@ -130,6 +179,96 @@ func (s *DonationRequestService) Create(ctx context.Context, p CreateRequestPara
 		return zero, fmt.Errorf("create donation request: %w", err)
 	}
 	return row, nil
+}
+
+// defaultBookingLeadDays mirrors the `CURRENT_DATE + 7` default in
+// `CreateDonationRequest`. Named here because two places must agree on it: the
+// gate decides for this date, and the insert stores it.
+const defaultBookingLeadDays = 7
+
+// gate applies FR-19 to one booking.
+//
+// The decision is made for the date being BOOKED, not for today. A donor whose
+// 56-day interval elapses next Tuesday is booking for next Tuesday, and refusing
+// them today would be refusing the commonest booking there is.
+//
+// A permanent deferral is the one failure an admin may override, and only with a
+// reason. Everything else stands for every role: an admin who could wave away an
+// interval window would be a way to bleed a donor early, and nothing in FR-19
+// asks for that.
+func (s *DonationRequestService) gate(
+	ctx context.Context,
+	q *store.Queries,
+	policies *domain.Policies,
+	donorID int64,
+	proc domain.Procedure,
+	on time.Time,
+	override *PermanentDeferralOverride,
+) error {
+	// Validated BEFORE the decision is read, so an override nobody was entitled
+	// to send is refused even when the donor turns out to be eligible anyway.
+	// Checking it afterwards made the refusal depend on the donor's clinical
+	// state: a staff member could send one and get a 201 with no trace, which is
+	// the opposite of "refused, not ignored".
+	if override != nil {
+		if err := override.Validate(); err != nil {
+			return fmt.Errorf("%w: %s", ErrInvalid, err.Error())
+		}
+	}
+
+	decision, err := s.elig.EvaluateWith(ctx, q, policies, donorID, proc, on)
+	if err != nil {
+		return err
+	}
+	if decision.Eligible {
+		if override != nil {
+			// Nothing to override. Refusing rather than ignoring keeps "an
+			// override was used" and "an override was needed" the same fact in
+			// the audit trail.
+			return fmt.Errorf("%w: there is no permanent deferral to override", ErrConflict)
+		}
+		return nil
+	}
+
+	if override == nil {
+		return &ErrIneligible{Decision: decision}
+	}
+
+	// An override clears the permanent deferral and NOTHING ELSE.
+	remaining := make([]domain.Failure, 0, len(decision.Failures))
+	for _, f := range decision.Failures {
+		if f.Criterion != domain.CriterionPermanentDeferral {
+			remaining = append(remaining, f)
+		}
+	}
+
+	if len(remaining) > 0 {
+		// Still refused. The caller gets the criteria that REMAIN, with their
+		// plain-language messages and their clearing date — returning a bare
+		// conflict here threw away everything FR-17 and FR-08 require, and told
+		// an admin only that their override had been unnecessary.
+		still := decision
+		still.Failures = remaining
+		still.Eligible = false
+		still.NextEligibleOn = domain.NextEligibleOn(still, on)
+		return &ErrIneligible{Decision: still}
+	}
+	if len(decision.Failures) == 0 {
+		return nil
+	}
+
+	// WI-27 replaces this with an audit_log row. Until then it is a structured
+	// log line, because FR-19 requires the override to be audited and an override
+	// with no trace is precisely what the requirement forbids.
+	slog.WarnContext(ctx, "permanent deferral overridden",
+		"event", "security.deferral_override",
+		"donor_id", donorID,
+		"actor_id", override.ActorID,
+		"actor_role", string(override.ActorRole),
+		"reason", override.Reason,
+		"policy_version", decision.PolicyVersion,
+	)
+	return nil
 }
 
 // Approve sets status='approved' and creates the appointment in ONE transaction.
@@ -145,6 +284,14 @@ func (s *DonationRequestService) Create(ctx context.Context, p CreateRequestPara
 // appointments.donation_request_id — a 500 for what is really a 409.
 func (s *DonationRequestService) Approve(ctx context.Context, id int32, reviewerID int64, scheduled time.Time, permits func(ownerID, centerID int64) bool) (store.CreateAppointmentForRequestRow, error) {
 	var appt store.CreateAppointmentForRequestRow
+
+	// Resolved before the transaction opens. Reading policy can hit the
+	// database, and asking for a second connection while holding a row lock is
+	// how concurrent approvals deadlock the pool — see EligibilityService.EvaluateWith.
+	policies, err := s.elig.Policies(ctx)
+	if err != nil {
+		return appt, err
+	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -170,6 +317,23 @@ func (s *DonationRequestService) Approve(ctx context.Context, id int32, reviewer
 
 	if err := domain.EnsureTransition(domain.RequestStatus(req.Status), domain.RequestApproved); err != nil {
 		return appt, fmt.Errorf("%w: request is %s", ErrConflict, req.Status)
+	}
+
+	// FR-19 again, and not redundantly.
+	//
+	// The gate at Create answered for the donor's PREFERRED date, using the facts
+	// as they stood then. Approval is a different question: staff choose the
+	// actual date, which may be weeks earlier, and the donor's record may have
+	// changed in between — a screening on Tuesday can record a deferral that did
+	// not exist when the request was raised. Approving without re-checking let
+	// staff schedule an appointment three weeks inside the interval simply by
+	// typing a date, which is the bypass the requirement names.
+	//
+	// No override here, deliberately: overriding is a decision made when the
+	// booking is raised, by an admin, with a reason. An approval screen is not
+	// where a permanent deferral should be waved through.
+	if err := s.gate(ctx, q, policies, int64(req.DonorID), domain.Procedure(req.Procedure), scheduled, nil); err != nil {
+		return appt, err
 	}
 
 	if err := q.ApproveDonationRequest(ctx, store.ApproveDonationRequestParams{ID: id, ReviewedBy: &reviewerID}); err != nil {

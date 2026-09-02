@@ -65,21 +65,23 @@ func (q *Queries) CountDonationRequests(ctx context.Context, arg CountDonationRe
 }
 
 const createDonationRequest = `-- name: CreateDonationRequest :one
-INSERT INTO donation_requests (donor_id, center_id, preferred_date, status, notes)
+INSERT INTO donation_requests (donor_id, center_id, preferred_date, procedure, status, notes)
 VALUES (
     $1,
     COALESCE($2::bigint, (SELECT id FROM donation_centers WHERE code = 'MAIN')),
     COALESCE($3::date, CURRENT_DATE + 7),
+    COALESCE($4::donation_procedure, 'whole_blood'),
     'pending',
-    $4
+    $5
 )
-RETURNING id, donor_id, center_id, status, preferred_date, created_at
+RETURNING id, donor_id, center_id, status, preferred_date, procedure, created_at
 `
 
 type CreateDonationRequestParams struct {
 	DonorID       int32
 	CenterID      *int64
 	PreferredDate pgtype.Date
+	Procedure     *DonationProcedure
 	Notes         *string
 }
 
@@ -89,14 +91,29 @@ type CreateDonationRequestRow struct {
 	CenterID      int64
 	Status        DonationRequestStatus
 	PreferredDate pgtype.Date
+	Procedure     DonationProcedure
 	CreatedAt     pgtype.Timestamptz
 }
 
+// `procedure` is written, not left to the column default.
+//
+// It used to be omitted, so the row was always `whole_blood` — while the FR-19
+// gate evaluated the procedure the CLIENT sent. A donor who gave whole blood
+// eight days ago could post `{"procedure":"apheresis_platelet"}`, pass the
+// 7-day platelet interval, and have a WHOLE-BLOOD request stored for approval.
+// The gate and the row have to describe the same donation or the gate guards
+// nothing.
+//
+// `preferred_date` keeps its `CURRENT_DATE + 7` default in SQL, but the service
+// now resolves that date BEFORE the gate runs and passes it explicitly, so the
+// date checked and the date stored are the same one. The default is left here
+// for any caller that bypasses the service.
 func (q *Queries) CreateDonationRequest(ctx context.Context, arg CreateDonationRequestParams) (CreateDonationRequestRow, error) {
 	row := q.db.QueryRow(ctx, createDonationRequest,
 		arg.DonorID,
 		arg.CenterID,
 		arg.PreferredDate,
+		arg.Procedure,
 		arg.Notes,
 	)
 	var i CreateDonationRequestRow
@@ -106,6 +123,7 @@ func (q *Queries) CreateDonationRequest(ctx context.Context, arg CreateDonationR
 		&i.CenterID,
 		&i.Status,
 		&i.PreferredDate,
+		&i.Procedure,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -154,7 +172,7 @@ func (q *Queries) GetDonationRequest(ctx context.Context, id int32) (GetDonation
 }
 
 const getDonationRequestForUpdate = `-- name: GetDonationRequestForUpdate :one
-SELECT id, donor_id, center_id, status, preferred_date
+SELECT id, donor_id, center_id, status, preferred_date, procedure
 FROM donation_requests
 WHERE id = $1
 FOR UPDATE
@@ -166,6 +184,7 @@ type GetDonationRequestForUpdateRow struct {
 	CenterID      int64
 	Status        DonationRequestStatus
 	PreferredDate pgtype.Date
+	Procedure     DonationProcedure
 }
 
 // Locks the row for the duration of the approving/rejecting transaction.
@@ -183,6 +202,7 @@ func (q *Queries) GetDonationRequestForUpdate(ctx context.Context, id int32) (Ge
 		&i.CenterID,
 		&i.Status,
 		&i.PreferredDate,
+		&i.Procedure,
 	)
 	return i, err
 }

@@ -439,6 +439,17 @@ Rules:
 - Validation failures → `422` with a populated `details[]`. Malformed JSON → `400`.
 - Domain-rule refusals (donor not eligible, unit expired, TTI incomplete) → `409 Conflict` with a
   specific `code`, **not** `400`. The request was well-formed; the world said no.
+- **`next_eligible_on` (optional, added by `WI-26`).** A clinical refusal that clears with time
+  carries the date it clears, as `YYYY-MM-DD`, alongside `code` and `details[]`. `FR-08` requires a
+  blocked donor to be told "the date they become eligible", and that is a property of the whole
+  refusal rather than of one `details[]` entry — putting a date inside an `issue` string would make
+  every client parse prose to find it. **Absent means there is no such date**: a permanent deferral
+  or an age ceiling does not clear by waiting, and saying nothing is the honest answer. The field is
+  omitted on every other error, so it is additive for existing clients.
+  On an eligibility refusal, `code` is the failing criterion (`temporarily_deferred`,
+  `interval_not_elapsed`, …) and `details[]` carries **one entry per failing criterion** — `field`
+  is the criterion code, `issue` its plain-language sentence — because `FR-17` requires each to be
+  named individually rather than collapsed into a single "ineligible".
 
 **Canonical status codes:** `200` read/update · `201` create (with `Location`) · `202` accepted for
 async · `204` delete · `400` malformed · `401` unauthenticated · `403` authenticated but not

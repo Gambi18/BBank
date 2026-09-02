@@ -52,6 +52,13 @@ jobs:
       - name: architecture (dependency rule, TRD 4.2)
         run: ./archcheck.sh
 
+      # WI-25: a clinical threshold compiled into Go is a threshold nobody can
+      # correct without a deploy, which is what FR-20 and FR-68 forbid.
+      # Verified non-vacuous: planting `const x = 56` fails; the same number in
+      # a comment does not.
+      - name: no clinical constants in Go (FR-20, FR-68)
+        run: ./noclinical.sh
+
       # -short skips the testcontainers integration tests; they get their own
       # job below so a Docker problem is distinguishable from a logic failure.
       - name: unit tests

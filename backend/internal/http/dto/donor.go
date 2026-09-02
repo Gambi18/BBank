@@ -46,6 +46,11 @@ type Eligibility struct {
 	PermanentlyDeferred bool    `json:"permanently_deferred"`
 	DeferredUntil       *string `json:"deferred_until,omitempty"`
 	NextEligibleOn      *string `json:"next_eligible_on,omitempty"`
-	IsEligibleToday     bool    `json:"is_eligible_today"`
-	Reason              string  `json:"reason"`
+	// A POINTER, because null is a real answer: the view returns NULL when a
+	// clinical threshold has no active policy row (migration 000018), meaning
+	// "this system cannot currently decide". Sending `false` there would state
+	// a conclusion nobody reached — and a UI would render "not eligible" for a
+	// donor whose eligibility is simply unknown.
+	IsEligibleToday *bool  `json:"is_eligible_today"`
+	Reason          string `json:"reason"`
 }

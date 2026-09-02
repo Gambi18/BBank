@@ -54,6 +54,14 @@ function describe(e: unknown, fallback: string): string {
         if (e.isUnauthenticated) return 'Your session expired. Please log in again.'
         if (e.isForbidden) return 'You do not have permission to do that'
         if (e.isNotFound) return 'That request no longer exists'
+        // A clinical refusal (FR-19) is SHOWN, not replaced by a fallback.
+        //
+        // The API writes these sentences to be read by the donor — "You are
+        // temporarily deferred. You can book again from 22 September 2026." —
+        // and `FR-19` requires "a plain-language explanation, not an error
+        // code". Swapping that for "Failed to request an appointment" is how a
+        // donor ends up phoning the centre to ask what went wrong.
+        if (e.isIneligible) return e.reasons.map((r) => r.message).join(' ')
     }
     return fallback
 }

@@ -47,7 +47,7 @@ the legacy scope; it will be rebaselined against the new scope at the `WI-06` bo
 | Auth & Security          |  98%   | **ES256 JWT + rotating refresh** (`WI-17`) now **verified on every request**, with the full TRD §7.6 permission matrix and §7.7 ownership enforced as middleware (`WI-20`). Ownership comes from the `sub`/`cid`/`hid` claims — never from a query parameter. **The frontend now verifies the same token** (`WI-19`): `proxy.ts` on the Edge runtime, server components on Node, one `jose` module for both. **`WI-18` closes the last credential gap**: the first admin is bootstrapped from an env-supplied one-time *invitation*, never a literal, and invite / suspend / reactivate / role-change are live. A suspended account stops working on its **next request** — verified over HTTP with a live token. The 2026-09-02 sweep closed five holes in that work: the login lockout was **counted but never applied**, so `NFR-12` was unreachable; TRD §5.1's bcrypt cost reached only the dummy hash, making the timing guard a louder oracle than none; a suspended account's invitation stayed live; and the one-time invite token was stored both in the replay table and in a redirect URL |
 | Data model / DB          |  97%   | **Schema complete.** Migrations `000000`–`000016` verified `up → down -all → up` on a fresh database: 26 tables, 21 enums, 4 views, 82 indexes, 18 triggers, 43 FKs, 14 policy rows, plus `000016` `idempotency_keys` (`WI-21`). Remaining: drop-legacy-donors, deliberately deferred to `WI-37` |
 | DevOps / Docker          |  92%   | + golang-migrate, `migrate` compose service, env-injected secrets, server timeouts, graceful shutdown, structured logs, `/healthz` + `/readyz` |
-| Testing                  |  70%   | CI skeleton (gofmt, vet, build, golangci-lint, govulncheck, tsc, eslint, npm audit, gitleaks, migrate up/down/up). Unit tests for the domain (ABO, blood groups, seed cross-check, RBAC matrix + transitions) and the authorization middleware — **all 660 matrix cells asserted over HTTP, granted and denied**. `WI-21` adds the legacy-path rewrite table, the runtime shim toggle, pagination clamping, and idempotency replay/reuse/in-flight/5xx-release. `WI-22` adds the donation-request state machine and the FR-09 rejection vocabulary — including a test asserting no reason describes the *person* rather than the request. **`WI-29` adds the integration harness**: real PostgreSQL 18 via `testcontainers`, migrations applied with the same `golang-migrate` production uses, **34 tests** covering the approve/reject lifecycle, genuine concurrency (8 simultaneous approvals → exactly one appointment), refresh-token reuse revoking a family, idempotency claim/replay/release, and the legacy `requests` → `donation_requests` migration against a fixture containing the rows the old `confirm` deleted. Coverage gated in CI: **domain 99% (gate 90%), service 72% (gate 70%)**, verified non-vacuous. **`WI-30` adds the HTTP-layer regression suite**: 18 tests named for the requirement or defect each guards, driving the *real* router against a real database — the `WI-02` ownership regression with no `donor_id` parameter, the §7.6 matrix as mounted, auth boundaries, `TD-15` driver-error leakage, `TD-17` pagination bounds, the shim toggle, and `A8`. It caught a live authorization leak on its first run. **The 2026-09-02 correctness sweep adds 11 more**, one per defect, and — because two of them turned out to prove nothing — establishes the discipline as a step, not an intention: every guard was deleted and its test watched go red. The admin-demotion race test passed with the row lock removed until it was rewritten to run eight concurrent demotions. Coverage: domain 98.5%, service 75.3%, backend overall 66.9%. Remaining: browser E2E, and `FR-19` (blocked on `WI-26`) |
+| Testing                  |  73%   | CI skeleton (gofmt, vet, build, golangci-lint, govulncheck, tsc, eslint, npm audit, gitleaks, migrate up/down/up). Unit tests for the domain (ABO, blood groups, seed cross-check, RBAC matrix + transitions) and the authorization middleware — **all 660 matrix cells asserted over HTTP, granted and denied**. `WI-21` adds the legacy-path rewrite table, the runtime shim toggle, pagination clamping, and idempotency replay/reuse/in-flight/5xx-release. `WI-22` adds the donation-request state machine and the FR-09 rejection vocabulary — including a test asserting no reason describes the *person* rather than the request. **`WI-29` adds the integration harness**: real PostgreSQL 18 via `testcontainers`, migrations applied with the same `golang-migrate` production uses, **34 tests** covering the approve/reject lifecycle, genuine concurrency (8 simultaneous approvals → exactly one appointment), refresh-token reuse revoking a family, idempotency claim/replay/release, and the legacy `requests` → `donation_requests` migration against a fixture containing the rows the old `confirm` deleted. Coverage gated in CI: **domain 99% (gate 90%), service 72% (gate 70%)**, verified non-vacuous. **`WI-30` adds the HTTP-layer regression suite**: 18 tests named for the requirement or defect each guards, driving the *real* router against a real database — the `WI-02` ownership regression with no `donor_id` parameter, the §7.6 matrix as mounted, auth boundaries, `TD-15` driver-error leakage, `TD-17` pagination bounds, the shim toggle, and `A8`. It caught a live authorization leak on its first run. **The 2026-09-02 correctness sweep adds 11 more**, one per defect, and — because two of them turned out to prove nothing — establishes the discipline as a step, not an intention: every guard was deleted and its test watched go red. The admin-demotion race test passed with the row lock removed until it was rewritten to run eight concurrent demotions. **`WI-25`/`WI-26` add the clinical suites**: TRD §13.3's eligibility boundary table one case per boundary (17/18/65/66, first-time 60/61, weight 49.9/50/50.1, Hb ±0.1 at both thresholds, the 56-day interval at 54/55/56/57), shelf life per component with **the DST and leap-year cases §13.3 calls "a real and embarrassing bug"**, and the `FR-19` gate driven through the service. `TestTheViewAndTheDomainAgree` runs eight donor fixtures through both the SQL view and the Go domain and fails if they ever differ. Coverage: domain 96.2%, service 77.3%. Remaining: browser E2E, and `FR-19` at check-in and collection (`WI-39`, `WI-44`) |
 | Documentation            |  90%   | Full planning set (8,100+ lines): PRD, TRD, User Journey, UI/UX Brief, DB Schema, Implementation Plan — all cross-referenced by FR/NFR/WI ID |
 
 ### Planning documents (added 2026-09-01)
@@ -105,6 +105,13 @@ schema doc; route paths by the user journey. Other documents cite, never redefin
 - [x] Donors: create (public self-registration) and update (`WI-22`)
 - [x] Appointments: cancel + reschedule, and the idempotent no-show sweep (`WI-23`)
 - [x] Donor update is a real PATCH — an omitted field keeps its stored value
+- [x] Clinical thresholds read from `active_policies`, none in Go source (`WI-25`, gated in CI)
+- [x] Eligibility domain: every failing criterion named, with a plain-language reason (`WI-25`)
+- [x] Component shelf lives from policy, DST- and leap-year-safe (`WI-25`)
+- [x] **`FR-19` deferral enforcement on booking**, server-side, with the eligible date (`WI-26`)
+- [x] Permanent-deferral override: admin only, reason required, logged (`WI-26`)
+- [ ] `FR-19` at check-in and collection (`WI-39`, `WI-44`)
+- [ ] Donation intervals for `apheresis_plasma` and `double_red_cell` (`WI-24`)
 - [ ] Session/JWT issuance from the backend (currently the frontend owns the cookie)
 
 ### Cross-cutting
@@ -216,23 +223,94 @@ _Resolved since this list was written:_ open CORS (now an explicit allowlist wit
 
 ## Suggested Next Steps (sequenced)
 
-1. **`WI-30` — the rest of the Phase 1 safety regression suite.** `WI-29` closed the larger half
-   of this: the service layer, the auth lifecycle and the migration path now fail in CI rather than
-   in a changelog. What is still only manually verified is the **HTTP layer** — the six-role route
-   matrix, token tampering, the deprecation shim toggle — plus browser journeys. `FR-19` deferral
-   enforcement cannot be covered until `WI-26` exists.
-2. `WI-23` — appointment reschedule/cancel and the daily no-show sweep.
-3. `WI-31` — admin donor edit/delete, password resets, and a confirmation dialog on destructive
+1. **`WI-24` — donation centres and slot capacity.** Now the closest thing to blocking: `WI-26`
+   refuses `apheresis_plasma` and `double_red_cell` because neither has a seeded donation interval,
+   and capacity-aware scheduling is what stops two approvals filling a one-seat slot.
+2. `WI-31` — admin donor edit/delete, password resets, and a confirmation dialog on destructive
    actions. `WI-18` shipped the operational minimum of `/admin/users`; this makes it complete.
-4. `WI-25`/`WI-26` — the policy resolver and the `FR-19` deferral gate. These are the two that
-   unblock the clinical spine, and `AgeYears` (fixed in `WI-29`) is waiting for them.
+3. `WI-27` — the audit log. `WI-26`'s permanent-deferral override currently writes a structured log
+   line because there is nowhere better; `FR-19` asks for an audit record, and `WI-27` is where the
+   `audit_log` row replaces it.
+4. `WI-39` / `WI-44` — `FR-19` at check-in and collection. The gate exists and is called from one
+   place; these are the other two the requirement names.
 5. `WI-77` — turn idempotency from recorded to **required** on the endpoints §6.5 marks `Idem`.
-   The storage and replay path landed in `WI-21`; only the `required` flag is left.
+   The storage and replay path landed in `WI-21`; the frontend stopped minting per-request keys in
+   the 2026-09-02 sweep, so what remains is minting one per form render and setting the flag.
 6. `WI-79` — email the invitation instead of handing the admin a link to copy.
+
+**Done since this list was last written:** `WI-23` (appointment cancel/reschedule/no-show sweep),
+`WI-30`'s HTTP layer, and `WI-25`/`WI-26` (the policy resolver and the `FR-19` booking gate).
 
 ---
 
 ## Changelog
+- **2026-09-02** — **`WI-25` and `WI-26`: clinical policy becomes data, and `FR-19`'s deferral gate
+  goes in. Plus the empty `policies` table nothing had noticed.**
+
+  **`WI-25` — the policy resolver.** Every clinical threshold the system applies — age band, weight,
+  haemoglobin by sex, vitals, donation intervals, annual caps, shelf lives, expiry windows — is now
+  read from `active_policies` at decision time. `internal/domain/policy.go` names the keys and
+  nothing else; `eligibility.go` and `shelflife.go` decide with whatever the rows say.
+  **A missing policy is an error, not a default.** `ErrPolicyMissing` stops the decision, because a
+  deleted threshold that silently falls back to a number in the source is a deleted threshold nobody
+  can see — the precise failure `FR-20` exists to prevent. `backend/noclinical.sh` gates it in CI:
+  planting `const x = 56` fails the build, the same number in a comment does not.
+  Each decision carries a **policy version** — a fingerprint of the rows that produced it — so two
+  decisions made under different numbers are distinguishable afterwards (`FR-68`).
+
+  **`WI-26` — the `FR-19` booking gate.** An active deferral or an open interval window now blocks a
+  donation request **in the service**, not the handler: the acceptance criterion is "the block
+  cannot be bypassed by calling the API directly", and a check in one handler is bypassed by the
+  next caller of the same method. The refusal carries every failing criterion with a sentence
+  written for the donor and the date it clears (`FR-08`, `FR-17`) — `409` with `next_eligible_on`,
+  an additive field recorded in TRD §6.2. A permanent deferral is overridable **only by an admin,
+  only with a reason**, and the override clears that one criterion and nothing else.
+  The gate decides for the date being **booked**, not for today: a donor whose interval elapses next
+  Tuesday is booking for next Tuesday.
+
+  **`policies` was empty in every integration test, and had been since `WI-29`.**
+  `policies.created_by` references `users`, and `TRUNCATE users … CASCADE` propagates to every table
+  with a foreign key pointing at it — cascade truncation ignores the `ON DELETE SET NULL` that
+  column declares. So the harness emptied the clinical policy table before every test while its own
+  comment claimed it left seed data intact. Nothing caught it because nothing read policy until now:
+  the seed cross-check tests parse the migration *file*, and `donor_eligibility` COALESCEd a
+  hardcoded fallback for each threshold, so it kept answering with 56 days and 18 years from an
+  empty table. `Truncate` now restores the seed, captured from the freshly migrated database rather
+  than copied into Go.
+
+  **Migration `000018` makes the view and the domain agree.** Two of them: the view's deferral
+  boundary was off by one *against itself* — it filtered deferrals with `ends_on > CURRENT_DATE`, so
+  a deferral ending today was already over, and then reported `next_eligible_on = deferred_until + 1`,
+  telling a donor to come back the day after the day it would itself have let them book. And the
+  COALESCE fallbacks are gone: with no policy row the view now answers `is_eligible_today = NULL`
+  and `reason = 'policy_unavailable'`, the same "cannot currently decide" the API gives, instead of
+  quietly applying a constant from a migration. `TestTheViewAndTheDomainAgree` drives eight donor
+  fixtures through both paths and fails if they ever differ.
+
+  **The review found eleven defects in this work, and seven were real bugs in it.** Worth recording
+  what they were, because five of them had passing tests over them:
+  the gate evaluated a `procedure` the insert never stored, so `{"procedure":"apheresis_platelet"}`
+  passed the 7-day interval and filed a **whole-blood** request; approval created the appointment for
+  a staff-chosen date with **no eligibility check at all**, so typing an earlier date scheduled a
+  donation three weeks inside the interval; the gate defaulted an absent date to today while the
+  insert defaulted it to a week out, refusing bookings that were fine; an override on a refusal with
+  no deferral in it discarded every real criterion; a non-admin's override was never validated for a
+  donor who happened to be eligible; a procedure with no configured interval reached the client as a
+  **500**; and a region-scoped policy row would have applied one region's thresholds to every
+  decision everywhere. Each is fixed with a test named for the defect, and each of those tests was
+  shown to fail with its fix removed.
+
+  **And the approval re-check deadlocked the connection pool on its first run.** It called the
+  pool-wide eligibility service from inside the approving transaction, so every goroutine held a
+  transaction and a `FOR UPDATE` lock while waiting for a second connection another goroutine was
+  holding; eight concurrent approvals hung until the suite timed out at ten minutes. The eligibility
+  read now runs on the caller's own transaction, and the policy snapshot is resolved before the
+  transaction opens. A named test drives twelve concurrent approvals with a sixty-second deadline.
+
+  Coverage: domain 96.2%, service 77.3%, both gates green. Not done here, and deliberately:
+  `apheresis_plasma` and `double_red_cell` have no seeded interval — inventing two clinical
+  constants is not a thing to do in passing, so booking either is refused with a 422 naming the gap,
+  and `WI-24` adds the rows. Check-in and collection get the same gate in `WI-39` and `WI-44`.
 - **2026-09-02** — **A correctness sweep: 17 defects across the work of the last five items, each
   fixed with a named test that fails without the fix.**
   No new feature. An audit of everything `WI-18` through `WI-23` touched, on the principle that the

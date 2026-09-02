@@ -22,10 +22,23 @@ func allow(int64, int64) bool { return true }
 // against a response body: approving leaves the request PRESENT as 'approved'
 // with a linked appointment. The original `confirm` deleted the row, which is
 // what destroyed the link back to who asked and when.
+// eligFor builds the FR-19 gate a booking service now requires.
+//
+// Real, not a stub: the gate is part of what `Create` means since WI-26, and a
+// test that bypassed it would be testing a code path production does not have.
+func eligFor(pool *pgxpool.Pool, q *store.Queries) *service.EligibilityService {
+	return service.NewEligibilityService(q, service.NewPolicyService(q))
+}
+
+func newRequestService(pool *pgxpool.Pool) *service.DonationRequestService {
+	q := store.New(pool)
+	return service.NewDonationRequestService(pool, q, eligFor(pool, q))
+}
+
 func TestApproveKeepsTheRequestAndLinksTheAppointment(t *testing.T) {
 	pool := testsupport.Pool(t)
 	q := store.New(pool)
-	svc := service.NewDonationRequestService(pool, q)
+	svc := service.NewDonationRequestService(pool, q, eligFor(pool, q))
 
 	center := testsupport.CenterID(t, pool)
 	donorID := testsupport.NewDonor(t, pool, "approve@example.test", "Approve Donor")
@@ -66,7 +79,7 @@ func TestApproveKeepsTheRequestAndLinksTheAppointment(t *testing.T) {
 func TestConcurrentApprovalsCreateExactlyOneAppointment(t *testing.T) {
 	pool := testsupport.Pool(t)
 	q := store.New(pool)
-	svc := service.NewDonationRequestService(pool, q)
+	svc := service.NewDonationRequestService(pool, q, eligFor(pool, q))
 
 	center := testsupport.CenterID(t, pool)
 	donorID := testsupport.NewDonor(t, pool, "race@example.test", "Race Donor")
@@ -126,7 +139,7 @@ func TestConcurrentApprovalsCreateExactlyOneAppointment(t *testing.T) {
 func TestOnlyOneOpenRequestPerDonor(t *testing.T) {
 	pool := testsupport.Pool(t)
 	q := store.New(pool)
-	svc := service.NewDonationRequestService(pool, q)
+	svc := service.NewDonationRequestService(pool, q, eligFor(pool, q))
 
 	center := testsupport.CenterID(t, pool)
 	donorID := testsupport.NewDonor(t, pool, "double@example.test", "Double Booker")
@@ -175,7 +188,7 @@ func TestOnlyOneOpenRequestPerDonor(t *testing.T) {
 // against a row that later reads 'rejected'.
 func TestDecidedRequestsCannotBeDecidedAgain(t *testing.T) {
 	pool := testsupport.Pool(t)
-	svc := service.NewDonationRequestService(pool, store.New(pool))
+	svc := newRequestService(pool)
 	ctx := context.Background()
 
 	center := testsupport.CenterID(t, pool)
@@ -226,7 +239,7 @@ func TestDecidedRequestsCannotBeDecidedAgain(t *testing.T) {
 // because the domain refuses first.
 func TestRejectionStoresACodedReason(t *testing.T) {
 	pool := testsupport.Pool(t)
-	svc := service.NewDonationRequestService(pool, store.New(pool))
+	svc := newRequestService(pool)
 	ctx := context.Background()
 
 	center := testsupport.CenterID(t, pool)
@@ -264,7 +277,7 @@ func TestRejectionStoresACodedReason(t *testing.T) {
 // violation is ErrNotFound — never a 403, which would confirm the row exists.
 func TestApproveOutsideScopeIsNotFound(t *testing.T) {
 	pool := testsupport.Pool(t)
-	svc := service.NewDonationRequestService(pool, store.New(pool))
+	svc := newRequestService(pool)
 
 	center := testsupport.CenterID(t, pool)
 	other := testsupport.SecondCenterID(t, pool)
@@ -287,7 +300,7 @@ func TestApproveOutsideScopeIsNotFound(t *testing.T) {
 // staff only their centre's, admin everything.
 func TestListIsNarrowedByScope(t *testing.T) {
 	pool := testsupport.Pool(t)
-	svc := service.NewDonationRequestService(pool, store.New(pool))
+	svc := newRequestService(pool)
 	ctx := context.Background()
 
 	main := testsupport.CenterID(t, pool)
@@ -321,7 +334,7 @@ func TestListIsNarrowedByScope(t *testing.T) {
 func TestAppointmentListScopeAndFilter(t *testing.T) {
 	pool := testsupport.Pool(t)
 	q := store.New(pool)
-	reqSvc := service.NewDonationRequestService(pool, q)
+	reqSvc := service.NewDonationRequestService(pool, q, eligFor(pool, q))
 	apptSvc := service.NewAppointmentService(pool, q)
 	ctx := context.Background()
 
@@ -372,7 +385,7 @@ func TestGetAppointmentAndRequestNotFound(t *testing.T) {
 	if _, err := service.NewAppointmentService(pool, q).Get(context.Background(), 999999); !errors.Is(err, service.ErrNotFound) {
 		t.Errorf("missing appointment = %v, want ErrNotFound", err)
 	}
-	if _, err := service.NewDonationRequestService(pool, q).Get(context.Background(), 999999); !errors.Is(err, service.ErrNotFound) {
+	if _, err := service.NewDonationRequestService(pool, q, eligFor(pool, q)).Get(context.Background(), 999999); !errors.Is(err, service.ErrNotFound) {
 		t.Errorf("missing request = %v, want ErrNotFound", err)
 	}
 }

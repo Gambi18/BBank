@@ -1156,7 +1156,7 @@ type DonorEligibility struct {
 	PermanentlyDeferred *bool
 	DeferredUntil       interface{}
 	NextEligibleOn      interface{}
-	IsEligibleToday     *bool
+	IsEligibleToday     interface{}
 	Reason              string
 }
 

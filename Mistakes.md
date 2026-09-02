@@ -295,3 +295,57 @@ passing.
 that an artificially re-opened invite is still refused.
 **Prevention:** overlapping guards need one assertion each. If a test passes with any single guard
 present, it measures the set, not the members — and the set is not what a future change will delete.
+
+### 2026-09-02 — `TRUNCATE ... CASCADE` emptied a seed table the comment promised to keep
+**Cause:** `testsupport.Truncate` truncates `users` with `CASCADE`, and `policies.created_by`
+references `users`. Cascade truncation propagates to every table with a foreign key pointing at the
+truncated one — it does not honour the `ON DELETE SET NULL` that column declares.
+**Course:** the clinical policy table was empty in every integration test, and had been since the
+harness was written. Nothing noticed for four work items because nothing read policy: the seed
+cross-check tests parse the migration *file*, and `donor_eligibility` COALESCEd a hardcoded fallback
+for every threshold, so it kept answering with 56 days and 18 years from an empty table. The first
+code that actually required a policy row found none.
+**Solution:** capture the seeded rows on the first `Pool()` — before the first truncate, which is
+what removes them — and re-insert after each. Fail loudly if the capture never ran.
+**Prevention:** `TRUNCATE ... CASCADE` is transitive over foreign keys, and its blast radius is not
+what the FK's `ON DELETE` clause says. A comment claiming which tables survive is a hypothesis;
+`SELECT count(*)` is the test. Where the harness asserts a precondition, assert it in code.
+
+### 2026-09-02 — Validated one value and stored another
+**Cause:** the FR-19 booking gate evaluated the `procedure` from the request body, and the INSERT
+omitted the column, so every stored row took the `whole_blood` default.
+**Course:** posting `{"procedure":"apheresis_platelet"}` was checked against the 7-day platelet
+interval and then filed as a whole-blood request — a way to book a whole-blood donation eight days
+after the last one. The gate's own comment claimed the block "cannot be bypassed by calling the API
+directly".
+**Solution:** resolve the date and the procedure once, before the check, and pass the same values to
+both the gate and the insert.
+**Prevention:** a validator and a writer that read different variables are not one operation. When a
+check guards a write, the checked value and the written value must be the same expression — and a
+test should assert what landed in the row, not just that the call succeeded.
+
+### 2026-09-02 — Held a transaction open while asking the pool for a second connection
+**Cause:** the approval re-check called the pool-wide eligibility service from inside the approving
+transaction, which already held a `FOR UPDATE` lock.
+**Course:** each of eight concurrent approvals held a connection and waited for another that a peer
+was holding. The suite hung and was killed at the ten-minute timeout — presenting as "the tests are
+slow", not as a deadlock.
+**Solution:** the eligibility read takes the caller's `*store.Queries`, so it runs on the connection
+already held; the policy snapshot is resolved *before* the transaction opens, because reading it can
+also need a connection.
+**Prevention:** inside a transaction, use the transaction. Any call that might acquire a connection
+of its own — a service, a cache miss, a helper taking the pool — is a deadlock at a concurrency
+equal to the pool size. Resolve what you need before `Begin`, or pass the transaction down.
+
+### 2026-09-03 — Two components disagreed about which day a deferral ends
+**Cause:** the SQL kept a deferral active while `ends_on > CURRENT_DATE` — exclusive — while the Go
+domain blocked *through* `ends_on` — inclusive. The `donor_eligibility` view contained both readings
+at once: it filtered exclusively and then reported `next_eligible_on = deferred_until + 1`.
+**Course:** on the end date itself the row vanished from the query while the domain would still have
+refused, and the view told donors to come back a day after the day it would itself have let them
+book. A one-day error in a clinical rule, in two directions, inside one view.
+**Solution:** `ends_on` is exclusive everywhere — the half-open reading the schema already uses for
+every `daterange`. The domain clears on `ends_on`; migration 000018 drops the `+ 1`.
+**Prevention:** a date boundary needs its inclusivity written down where the column is defined, not
+inferred at each call site. When two components implement one rule, a test that runs the same
+fixture through both is the only thing that keeps them honest — `TestTheViewAndTheDomainAgree`.

@@ -161,6 +161,27 @@ func (h *DonationRequestHandler) create(w http.ResponseWriter, r *http.Request) 
 		}
 		p.PreferredDate = &d
 	}
+	if in.Procedure != nil {
+		proc, err := domain.ParseProcedure(*in.Procedure)
+		if err != nil {
+			response.Unprocessable(w, r, err.Error(),
+				response.Detail{Field: "procedure", Issue: "not a known donation procedure"})
+			return
+		}
+		p.Procedure = proc
+	}
+
+	// The override is built from the CALLER'S OWN role, read from the verified
+	// token — never from anything in the body. A request that could name its own
+	// role would be a request that could grant itself one, which is the shape of
+	// the A14 defect this codebase has already fixed twice.
+	if in.OverridePermanentDeferralReason != nil {
+		p.Override = &service.PermanentDeferralOverride{
+			ActorID:   caller.UserID,
+			ActorRole: domain.Role(caller.Role),
+			Reason:    *in.OverridePermanentDeferralReason,
+		}
+	}
 
 	row, err := h.svc.Create(r.Context(), p)
 	if err != nil {

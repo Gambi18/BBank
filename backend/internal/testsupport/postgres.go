@@ -82,6 +82,8 @@ func Pool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 
+	// Before the truncate, never after: the truncate is what empties `policies`.
+	capturePolicySeed(pool)
 	Truncate(t, pool)
 	return pool
 }
@@ -153,6 +155,22 @@ func MigrationsDir() string {
 // Seed data is deliberately kept: it is part of the schema's meaning, and a test
 // that had to insert its own blood-compatibility matrix would be asserting
 // against its own fixture rather than against the one the application ships.
+//
+// **`policies` needs explicit restoring, and this is not a nicety.**
+// `policies.created_by` references `users`, and `TRUNCATE users ... CASCADE`
+// propagates to every table with a foreign key pointing at it — cascade truncation
+// ignores `ON DELETE SET NULL`, which is what that column declares. So the
+// statement below silently emptied the clinical policy table on every single
+// test, and this comment claimed the opposite for as long as it existed.
+//
+// Nothing caught it because nothing read policy until `WI-25`: the seed
+// cross-check tests parse the migration FILE, and the `donor_eligibility` view
+// COALESCEs a hardcoded fallback for each threshold, so it kept answering with
+// 56 days and 18 years from an empty table. The first code to actually require a
+// policy row found none.
+//
+// `test_types`, `abo_compatibility` and `donation_centers` have no foreign key to
+// `users` and genuinely do survive, which is why the claim looked true.
 func Truncate(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	// Order does not matter — one TRUNCATE ... CASCADE handles the FK graph.
@@ -167,6 +185,94 @@ func Truncate(t *testing.T, pool *pgxpool.Pool) {
 	if err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
+	restorePolicySeed(t, pool)
+}
+
+// policySeed is the seeded `policies` rows, captured once from the freshly
+// migrated database before any test can truncate them.
+//
+// Captured rather than hardcoded: a copy of the values here would be a second
+// source of truth for clinical constants, drifting from migration 000012 in
+// exactly the way `TestSeededPolicyValuesMatchTheMigration` exists to prevent.
+var (
+	policySeedOnce sync.Once
+	policySeed     []policyRow
+	policySeedErr  error
+)
+
+type policyRow struct {
+	key, region, description string
+	value                    []byte
+	effectiveFrom            time.Time
+	effectiveTo              *time.Time
+}
+
+func restorePolicySeed(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+
+	if policySeedErr != nil {
+		t.Fatalf("capture the policy seed: %v", policySeedErr)
+	}
+	// A nil seed with no error means the capture never ran — `Truncate` is
+	// exported, so a caller who obtained a pool some other way can reach here
+	// first. Failing loudly matters: returning quietly would leave `policies`
+	// empty, which is the exact silent state this whole mechanism exists to
+	// prevent, and the symptom would surface in an unrelated test.
+	if policySeed == nil {
+		t.Fatal("the policy seed was never captured — call testsupport.Pool(t) rather than Truncate directly")
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM policies`).Scan(&n); err != nil {
+		t.Fatalf("count policies: %v", err)
+	}
+	if n > 0 {
+		return
+	}
+	for _, r := range policySeed {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO policies (key, value, region, description, effective_from, effective_to)
+			VALUES ($1, $2, $3, $4, $5, $6)`,
+			r.key, r.value, r.region, r.description, r.effectiveFrom, r.effectiveTo); err != nil {
+			t.Fatalf("restore policy %s: %v", r.key, err)
+		}
+	}
+}
+
+// capturePolicySeed reads the seeded policy rows once, on the first Pool() of a
+// test binary — which is the only moment the table is guaranteed to still hold
+// them, because the Truncate immediately after it is what removes them.
+func capturePolicySeed(pool *pgxpool.Pool) {
+	policySeedOnce.Do(func() {
+		policySeed, policySeedErr = readPolicies(context.Background(), pool)
+	})
+}
+
+func readPolicies(ctx context.Context, pool *pgxpool.Pool) ([]policyRow, error) {
+	rows, err := pool.Query(ctx, `
+		SELECT key, region, COALESCE(description, ''), value, effective_from, effective_to
+		FROM policies ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []policyRow
+	for rows.Next() {
+		var r policyRow
+		if err := rows.Scan(&r.key, &r.region, &r.description, &r.value, &r.effectiveFrom, &r.effectiveTo); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("the freshly migrated database has no policy rows — migration 000012 did not seed")
+	}
+	return out, nil
 }
 
 // Terminate stops the shared container. Call from TestMain when a package needs
