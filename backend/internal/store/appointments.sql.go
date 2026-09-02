@@ -11,6 +11,25 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const cancelAppointment = `-- name: CancelAppointment :exec
+UPDATE appointments
+   SET status = 'cancelled', cancelled_at = now(), cancellation_reason = $2
+WHERE id = $1
+`
+
+type CancelAppointmentParams struct {
+	ID                 int32
+	CancellationReason *string
+}
+
+// The column is `cancellation_reason` (read from the schema, not guessed), and
+// there is no `cancelled_by`: who did it belongs in `audit_log`, which WI-27
+// writes by trigger so no application path can skip it.
+func (q *Queries) CancelAppointment(ctx context.Context, arg CancelAppointmentParams) error {
+	_, err := q.db.Exec(ctx, cancelAppointment, arg.ID, arg.CancellationReason)
+	return err
+}
+
 const countAppointments = `-- name: CountAppointments :one
 SELECT count(*)
 FROM appointments a
@@ -129,6 +148,38 @@ func (q *Queries) GetAppointment(ctx context.Context, id int32) (GetAppointmentR
 	return i, err
 }
 
+const getAppointmentForUpdate = `-- name: GetAppointmentForUpdate :one
+SELECT id, donation_request_id, donor_id, center_id, status, scheduled_at
+FROM appointments
+WHERE id = $1
+FOR UPDATE
+`
+
+type GetAppointmentForUpdateRow struct {
+	ID                int32
+	DonationRequestID *int32
+	DonorID           int32
+	CenterID          int64
+	Status            AppointmentStatus
+	ScheduledAt       pgtype.Timestamptz
+}
+
+// Locks the row for a cancel or reschedule, so the status check and the write
+// cannot straddle another transaction's change.
+func (q *Queries) GetAppointmentForUpdate(ctx context.Context, id int32) (GetAppointmentForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getAppointmentForUpdate, id)
+	var i GetAppointmentForUpdateRow
+	err := row.Scan(
+		&i.ID,
+		&i.DonationRequestID,
+		&i.DonorID,
+		&i.CenterID,
+		&i.Status,
+		&i.ScheduledAt,
+	)
+	return i, err
+}
+
 const listAppointments = `-- name: ListAppointments :many
 
 SELECT a.id, COALESCE(a.donation_request_id, 0)::bigint AS donation_request_id,
@@ -209,4 +260,60 @@ func (q *Queries) ListAppointments(ctx context.Context, arg ListAppointmentsPara
 		return nil, err
 	}
 	return items, nil
+}
+
+const rescheduleAppointment = `-- name: RescheduleAppointment :one
+UPDATE appointments
+   SET scheduled_at = $2
+WHERE id = $1
+RETURNING id, donation_request_id, donor_id, center_id, status, scheduled_at
+`
+
+type RescheduleAppointmentParams struct {
+	ID          int32
+	ScheduledAt pgtype.Timestamptz
+}
+
+type RescheduleAppointmentRow struct {
+	ID                int32
+	DonationRequestID *int32
+	DonorID           int32
+	CenterID          int64
+	Status            AppointmentStatus
+	ScheduledAt       pgtype.Timestamptz
+}
+
+func (q *Queries) RescheduleAppointment(ctx context.Context, arg RescheduleAppointmentParams) (RescheduleAppointmentRow, error) {
+	row := q.db.QueryRow(ctx, rescheduleAppointment, arg.ID, arg.ScheduledAt)
+	var i RescheduleAppointmentRow
+	err := row.Scan(
+		&i.ID,
+		&i.DonationRequestID,
+		&i.DonorID,
+		&i.CenterID,
+		&i.Status,
+		&i.ScheduledAt,
+	)
+	return i, err
+}
+
+const sweepNoShows = `-- name: SweepNoShows :execrows
+UPDATE appointments
+   SET status = 'no_show'
+WHERE status = 'scheduled'
+  AND scheduled_at < now() - $1::interval
+`
+
+// The daily no-show sweep (FR-13).
+//
+// Idempotent by construction: it only touches rows still `scheduled` whose time
+// has passed, so a second run in the same minute matches nothing. It writes NO
+// deferral — not showing up is an administrative fact, and turning it into a
+// clinical one would put a mark on a donor's record that no clinician made.
+func (q *Queries) SweepNoShows(ctx context.Context, grace pgtype.Interval) (int64, error) {
+	result, err := q.db.Exec(ctx, sweepNoShows, grace)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

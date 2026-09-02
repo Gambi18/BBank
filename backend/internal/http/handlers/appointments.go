@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"bbank/internal/domain"
 	"bbank/internal/http/dto"
@@ -15,11 +17,12 @@ import (
 )
 
 type AppointmentHandler struct {
-	svc *service.AppointmentService
+	svc    *service.AppointmentService
+	replay func(http.Handler) http.Handler
 }
 
-func NewAppointmentHandler(svc *service.AppointmentService) *AppointmentHandler {
-	return &AppointmentHandler{svc: svc}
+func NewAppointmentHandler(svc *service.AppointmentService, idem middleware.IdempotencyStore) *AppointmentHandler {
+	return &AppointmentHandler{svc: svc, replay: middleware.Idempotency(idem, false)}
 }
 
 func (h *AppointmentHandler) Routes() chi.Router {
@@ -27,7 +30,64 @@ func (h *AppointmentHandler) Routes() chi.Router {
 	read := middleware.RequirePermission("appointments", domain.Read)
 	r.With(read).Get("/", h.list)
 	r.With(read).Get("/{id}", h.get)
+
+	// Cancel and reschedule are named transitions (§7.6): donors hold both on
+	// their own appointments, staff on their centre's. RequireTransition gates
+	// the named move rather than a bare Execute, so a transition nobody has
+	// declared — `check_in`, which WI-39 must pair with the FR-19 deferral
+	// block — is denied rather than assumed harmless.
+	r.With(middleware.RequireTransition("appointments", "cancel"), h.replay).Post("/{id}/cancel", h.cancel)
+	r.With(middleware.RequireTransition("appointments", "reschedule"), h.replay).Post("/{id}/reschedule", h.reschedule)
 	return r
+}
+
+func (h *AppointmentHandler) cancel(w http.ResponseWriter, r *http.Request) {
+	id, ok := idParam32(w, r)
+	if !ok {
+		return
+	}
+	var in dto.CancelAppointment
+	if err := decodeOptional(r, &in); err != nil {
+		response.BadRequest(w, r, "invalid JSON body")
+		return
+	}
+	if err := h.svc.Cancel(r.Context(), id, in.Reason, permitFunc(r)); err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	response.NoContent(w)
+}
+
+func (h *AppointmentHandler) reschedule(w http.ResponseWriter, r *http.Request) {
+	id, ok := idParam32(w, r)
+	if !ok {
+		return
+	}
+	var in dto.RescheduleAppointment
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		response.BadRequest(w, r, "invalid JSON body")
+		return
+	}
+	if in.ScheduledAt == "" {
+		response.Unprocessable(w, r, "a new time is required",
+			response.Detail{Field: "scheduled_at", Issue: "required"})
+		return
+	}
+	// RFC3339, so the caller states the offset rather than leaving the server to
+	// assume one. The deployment timezone is an open question (schema Q6) and a
+	// bare date would make this endpoint guess it.
+	to, err := time.Parse(time.RFC3339, in.ScheduledAt)
+	if err != nil {
+		response.Unprocessable(w, r, "scheduled_at must be an RFC3339 timestamp, e.g. 2026-12-01T09:00:00+01:00",
+			response.Detail{Field: "scheduled_at", Issue: "not an RFC3339 timestamp"})
+		return
+	}
+
+	if err := h.svc.Reschedule(r.Context(), id, to, permitFunc(r)); err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	response.NoContent(w)
 }
 
 func (h *AppointmentHandler) list(w http.ResponseWriter, r *http.Request) {

@@ -103,7 +103,7 @@ schema doc; route paths by the user journey. Other documents cite, never redefin
 - [x] Donation-request state machine; decided states are terminal (`WI-22`)
 - [x] Requests: reject (coded reason) and cancel endpoints (`WI-22`)
 - [x] Donors: create (public self-registration) and update (`WI-22`)
-- [ ] Appointments: reschedule / cancel (`WI-23`)
+- [x] Appointments: cancel + reschedule, and the idempotent no-show sweep (`WI-23`)
 - [ ] Session/JWT issuance from the backend (currently the frontend owns the cookie)
 
 ### Cross-cutting
@@ -196,11 +196,11 @@ All four P0 findings below are fixed and covered by an acceptance check. Origina
   Sign-out is now a route handler *inside* that path, and revocation is asserted in the database.
 
 ### P1 — Remaining
-1. **No appointment reschedule or cancel** (`WI-23`). Donation requests can now be cancelled and
-   rejected (`WI-22`); appointments still cannot be moved or called off once scheduled.
-2. **Invitations are not emailed** (`WI-79`). The one-time link is returned to the inviting admin
+1. **Invitations are not emailed** (`WI-79`). The one-time link is returned to the inviting admin
    to pass on by hand. A deliberate stopping point: inventing a mail path here would be a second,
    unaudited way to send credentials.
+2. **A codebase audit on 2026-09-02 found 3 high and 9 medium issues** — see the changelog entry.
+   They are being worked in severity order.
 
 _Resolved since this list was written:_ open CORS (now an explicit allowlist with `Vary: Origin`).
 
@@ -229,6 +229,23 @@ _Resolved since this list was written:_ open CORS (now an explicit allowlist wit
 ---
 
 ## Changelog
+- **2026-09-02** — **`WI-23`: appointment cancel, reschedule, and the no-show sweep.**
+  `FR-11` and `FR-13`. Both mutations lock the row before reading its status, so the check and the
+  write cannot straddle another transaction, and both are authorized against the **locked** row —
+  the row that was checked is the row that gets written.
+  **Cancel and reschedule stop at check-in, deliberately.** Once a donor is checked in the
+  appointment is a clinical encounter in progress, and moving it would rewrite when that encounter
+  happened; once it has passed, the honest record is `no_show` or `completed`, not a quietly
+  relocated slot. `check_in` itself is absent from the state machine until `WI-39`, which must pair
+  it with the `FR-19` deferral block — pre-granting it here would let that requirement be skipped.
+  **The sweep creates no deferral**, which is the acceptance criterion and also the point: missing
+  an appointment is administrative, and recording it as a clinical deferral would put a mark on a
+  donor's record that no clinician made — one that `donor_eligibility` would then act on to block
+  their next booking. It is idempotent by construction (it matches only `scheduled` rows past their
+  grace window), so it needs no leader election and a second replica running it is harmless. The
+  grace period is 6 hours: a donor stuck in traffic is a donation, not an absence.
+  `scheduled_at` is taken as RFC3339 rather than a bare date, so the caller states the offset
+  instead of the server guessing one — the deployment timezone is still an open question (schema Q6).
 - **2026-09-02** — **`WI-30` (partial): the HTTP regression suite — and the authorization leak it
   found on its first run.**
   `WI-29` proved the rules are *implemented*. Only an HTTP test proves they are *mounted*, and that

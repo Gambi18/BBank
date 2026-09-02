@@ -107,3 +107,17 @@ type UpdateDonor struct {
 	BloodGroup *string `json:"blood_group,omitempty"`
 	Rhesus     *string `json:"rhesus,omitempty"`
 }
+
+// CancelAppointment carries an optional free-text reason. Optional because a
+// donor cancelling their own slot owes nobody an explanation; staff cancelling
+// on someone's behalf usually have one worth recording.
+type CancelAppointment struct {
+	Reason string `json:"reason,omitempty"`
+}
+
+// RescheduleAppointment takes an RFC3339 timestamp, not a bare date: the
+// deployment timezone is an open question (schema Q6), and a date would make
+// the server guess which 09:00 was meant.
+type RescheduleAppointment struct {
+	ScheduledAt string `json:"scheduled_at"`
+}

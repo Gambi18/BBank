@@ -50,3 +50,37 @@ VALUES (
     sqlc.narg('created_by')
 )
 RETURNING id, donation_request_id, donor_id, center_id, scheduled_at, status;
+
+-- Locks the row for a cancel or reschedule, so the status check and the write
+-- cannot straddle another transaction's change.
+-- name: GetAppointmentForUpdate :one
+SELECT id, donation_request_id, donor_id, center_id, status, scheduled_at
+FROM appointments
+WHERE id = $1
+FOR UPDATE;
+
+-- The column is `cancellation_reason` (read from the schema, not guessed), and
+-- there is no `cancelled_by`: who did it belongs in `audit_log`, which WI-27
+-- writes by trigger so no application path can skip it.
+-- name: CancelAppointment :exec
+UPDATE appointments
+   SET status = 'cancelled', cancelled_at = now(), cancellation_reason = $2
+WHERE id = $1;
+
+-- name: RescheduleAppointment :one
+UPDATE appointments
+   SET scheduled_at = $2
+WHERE id = $1
+RETURNING id, donation_request_id, donor_id, center_id, status, scheduled_at;
+
+-- The daily no-show sweep (FR-13).
+--
+-- Idempotent by construction: it only touches rows still `scheduled` whose time
+-- has passed, so a second run in the same minute matches nothing. It writes NO
+-- deferral — not showing up is an administrative fact, and turning it into a
+-- clinical one would put a mark on a donor's record that no clinician made.
+-- name: SweepNoShows :execrows
+UPDATE appointments
+   SET status = 'no_show'
+WHERE status = 'scheduled'
+  AND scheduled_at < now() - sqlc.arg('grace')::interval;

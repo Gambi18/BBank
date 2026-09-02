@@ -99,7 +99,7 @@ func NewRouter(d Deps) http.Handler {
 	r.Mount("/api/v1/donation-requests",
 		handlers.NewDonationRequestHandler(service.NewDonationRequestService(d.Pool, q), idem).Routes())
 	r.Mount("/api/v1/appointments",
-		handlers.NewAppointmentHandler(service.NewAppointmentService(q)).Routes())
+		handlers.NewAppointmentHandler(service.NewAppointmentService(d.Pool, q), idem).Routes())
 
 	// User administration (WI-18). `users` is a resource in the §7.6 matrix, so
 	// it is gated there rather than by RequireRole.

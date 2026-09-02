@@ -96,6 +96,14 @@ func main() {
 	// leaving the variable in a deployment re-opens nothing.
 	bootstrapAdmin(context.Background(), logger, pool, signer, cfg)
 
+	// WI-23: the daily no-show sweep. An in-process ticker, not a cron entry,
+	// because it must not depend on anything outside the deployment — and it is
+	// idempotent, so a second replica running it too is harmless.
+	// WI-85 moves this to River alongside the rest of the async platform.
+	sweepCtx, stopSweep := context.WithCancel(context.Background())
+	defer stopSweep()
+	go runNoShowSweep(sweepCtx, logger, pool)
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           bbhttp.NewRouter(bbhttp.Deps{Cfg: cfg, Pool: pool, Signer: signer, Flags: flags}),
@@ -178,4 +186,49 @@ func bootstrapAdmin(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool
 		"invite_token", token,
 		"expires_in_days", int(service.InviteTTL.Hours()/24),
 	)
+}
+
+// noShowSweepInterval is how often past appointments are swept.
+//
+// Hourly rather than daily despite FR-13 calling it a daily sweep: the work is
+// a single indexed UPDATE that matches nothing most of the time, and running it
+// often means a stale `scheduled` row is visible for an hour at worst instead of
+// a day. Idempotence is what makes the frequency a free choice.
+const noShowSweepInterval = time.Hour
+
+// runNoShowSweep marks past, un-attended appointments (FR-13).
+//
+// Safe to run twice, and safe to run in several replicas at once: the statement
+// matches only rows still `scheduled` whose slot passed more than the grace
+// period ago, so whichever replica gets there first leaves nothing for the
+// others. That property is why this needs no leader election.
+func runNoShowSweep(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool) {
+	svc := service.NewAppointmentService(pool, store.New(pool))
+
+	sweep := func() {
+		runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		n, err := svc.SweepNoShows(runCtx)
+		if err != nil {
+			logger.Error("no-show sweep failed", "error", err)
+			return
+		}
+		if n > 0 {
+			// Only when it did something: an hourly "swept 0" line is noise that
+			// trains people to ignore the log.
+			logger.Info("no-show sweep", "marked", n)
+		}
+	}
+
+	sweep() // once at boot, so a restart after downtime catches up immediately
+	ticker := time.NewTicker(noShowSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sweep()
+		}
+	}
 }

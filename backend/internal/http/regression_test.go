@@ -747,3 +747,52 @@ func TestFR65_UsersEndpointDoesNotLeakOtherAccounts(t *testing.T) {
 		}
 	}
 }
+
+// FR-11: a donor may cancel and reschedule their OWN appointment, and nobody
+// else's. The transition is declared for donors in §7.6, so the guard that
+// matters here is ownership rather than role.
+func TestFR11_CancelAndRescheduleAreOwnershipScoped(t *testing.T) {
+	h := newHarness(t)
+	center := testsupport_CenterID(t, h)
+
+	ownerID := h.donor(t, "mine@example.test", "Mine")
+	h.donor(t, "theirs@example.test", "Theirs")
+	staffID := h.user(t, "fr11.staff@example.test", "staff", &center)
+	apptID := h.approve(t, h.pendingRequest(t, ownerID, center), staffID, center)
+
+	owner := h.token(t, "mine@example.test")
+	other := h.token(t, "theirs@example.test")
+	base := "/api/v1/appointments/" + itoa(apptID)
+
+	// Another donor cannot touch it, and gets 404 rather than 403.
+	for _, action := range []string{"/cancel", "/reschedule"} {
+		if got := h.do(t, http.MethodPost, base+action, other, `{"scheduled_at":"2027-01-01T09:00:00Z"}`); got.status != http.StatusNotFound {
+			t.Errorf("another donor POST %s = %d, want 404", action, got.status)
+		}
+	}
+	if h.count(t, `SELECT count(*) FROM appointments WHERE id = $1 AND status = 'scheduled'`, apptID) != 1 {
+		t.Fatal("an unauthorized call changed the appointment")
+	}
+
+	// The owner can reschedule it forward, then cancel it.
+	if got := h.do(t, http.MethodPost, base+"/reschedule", owner, `{"scheduled_at":"2027-01-01T09:00:00Z"}`); got.status != http.StatusNoContent {
+		t.Fatalf("owner reschedule = %d: %s", got.status, truncate(got.body))
+	}
+	if got := h.do(t, http.MethodPost, base+"/cancel", owner, `{"reason":"away that week"}`); got.status != http.StatusNoContent {
+		t.Fatalf("owner cancel = %d: %s", got.status, truncate(got.body))
+	}
+	if h.count(t, `SELECT count(*) FROM appointments WHERE id = $1 AND status = 'cancelled'`, apptID) != 1 {
+		t.Fatal("the appointment was not cancelled")
+	}
+
+	// A decided appointment is terminal: cancelling again is a conflict.
+	if got := h.do(t, http.MethodPost, base+"/cancel", owner, `{}`); got.status != http.StatusConflict {
+		t.Errorf("cancelling twice = %d, want 409", got.status)
+	}
+
+	// A malformed timestamp is a 422 naming the field, not a 500.
+	other2 := h.approve(t, h.pendingRequest(t, ownerID, center), staffID, center)
+	if got := h.do(t, http.MethodPost, "/api/v1/appointments/"+itoa(other2)+"/reschedule", owner, `{"scheduled_at":"next tuesday"}`); got.status != http.StatusUnprocessableEntity {
+		t.Errorf("a malformed timestamp = %d, want 422", got.status)
+	}
+}

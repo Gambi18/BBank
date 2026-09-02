@@ -11,6 +11,8 @@ import (
 	"bbank/internal/service"
 	"bbank/internal/store"
 	"bbank/internal/testsupport"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // allow is the "any row is yours" permit, for tests that are not about scope.
@@ -320,7 +322,7 @@ func TestAppointmentListScopeAndFilter(t *testing.T) {
 	pool := testsupport.Pool(t)
 	q := store.New(pool)
 	reqSvc := service.NewDonationRequestService(pool, q)
-	apptSvc := service.NewAppointmentService(q)
+	apptSvc := service.NewAppointmentService(pool, q)
 	ctx := context.Background()
 
 	center := testsupport.CenterID(t, pool)
@@ -367,10 +369,167 @@ func TestGetAppointmentAndRequestNotFound(t *testing.T) {
 	pool := testsupport.Pool(t)
 	q := store.New(pool)
 
-	if _, err := service.NewAppointmentService(q).Get(context.Background(), 999999); !errors.Is(err, service.ErrNotFound) {
+	if _, err := service.NewAppointmentService(pool, q).Get(context.Background(), 999999); !errors.Is(err, service.ErrNotFound) {
 		t.Errorf("missing appointment = %v, want ErrNotFound", err)
 	}
 	if _, err := service.NewDonationRequestService(pool, q).Get(context.Background(), 999999); !errors.Is(err, service.ErrNotFound) {
 		t.Errorf("missing request = %v, want ErrNotFound", err)
 	}
+}
+
+// FR-13: the sweep is safe to run twice, and creates NO deferral.
+//
+// Recording a missed appointment as a clinical deferral would put a mark on a
+// donor's record that no clinician made — and `donor_eligibility` reads
+// deferrals, so it would then block their next booking.
+func TestNoShowSweepIsIdempotentAndCreatesNoDeferral(t *testing.T) {
+	pool := testsupport.Pool(t)
+	q := store.New(pool)
+	svc := service.NewAppointmentService(pool, q)
+	ctx := context.Background()
+
+	center := testsupport.CenterID(t, pool)
+	missed := testsupport.NewDonor(t, pool, "noshow@example.test", "No Show")
+	upcoming := testsupport.NewDonor(t, pool, "upcoming@example.test", "Still Coming")
+	recent := testsupport.NewDonor(t, pool, "recent@example.test", "Just Late")
+
+	// Long past: should be swept.
+	mkAppt(t, pool, missed, center, "-3 days", "scheduled")
+	// In the future: must not be touched.
+	mkAppt(t, pool, upcoming, center, "3 days", "scheduled")
+	// Past, but inside the grace window: a donor stuck in traffic is a donation,
+	// not an absence.
+	mkAppt(t, pool, recent, center, "-1 hour", "scheduled")
+
+	n, err := svc.SweepNoShows(ctx)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("swept %d rows, want 1", n)
+	}
+
+	// Idempotent: a second run finds nothing left to do.
+	again, err := svc.SweepNoShows(ctx)
+	if err != nil {
+		t.Fatalf("second sweep: %v", err)
+	}
+	if again != 0 {
+		t.Errorf("the second sweep marked %d more rows; it is not idempotent", again)
+	}
+
+	if got := testsupport.CountRows(t, pool,
+		`SELECT count(*) FROM appointments WHERE donor_id = $1 AND status = 'no_show'`, missed); got != 1 {
+		t.Error("the missed appointment was not marked no_show")
+	}
+	if got := testsupport.CountRows(t, pool,
+		`SELECT count(*) FROM appointments WHERE donor_id IN ($1,$2) AND status = 'scheduled'`, upcoming, recent); got != 2 {
+		t.Error("the sweep touched a future or within-grace appointment")
+	}
+	// The assertion that matters clinically.
+	if got := testsupport.CountRows(t, pool, `SELECT count(*) FROM deferrals`); got != 0 {
+		t.Fatalf("the sweep created %d deferrals; missing an appointment is administrative, not clinical", got)
+	}
+}
+
+// FR-11: cancelling frees the slot, and only before the appointment starts.
+func TestCancelAndRescheduleBoundaries(t *testing.T) {
+	pool := testsupport.Pool(t)
+	svc := service.NewAppointmentService(pool, store.New(pool))
+	ctx := context.Background()
+	center := testsupport.CenterID(t, pool)
+
+	t.Run("cancel a future appointment", func(t *testing.T) {
+		d := testsupport.NewDonor(t, pool, "cancelme@example.test", "Cancel Me")
+		id := mkAppt(t, pool, d, center, "5 days", "scheduled")
+		if err := svc.Cancel(ctx, id, "changed my mind", allow); err != nil {
+			t.Fatalf("cancel: %v", err)
+		}
+		var status, reason string
+		if err := pool.QueryRow(ctx,
+			`SELECT status::text, coalesce(cancellation_reason,'') FROM appointments WHERE id = $1`, id).
+			Scan(&status, &reason); err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		if status != "cancelled" || reason != "changed my mind" {
+			t.Errorf("got (%s, %q)", status, reason)
+		}
+	})
+
+	t.Run("cancelling twice is a conflict", func(t *testing.T) {
+		d := testsupport.NewDonor(t, pool, "twice@example.test", "Twice")
+		id := mkAppt(t, pool, d, center, "5 days", "scheduled")
+		if err := svc.Cancel(ctx, id, "", allow); err != nil {
+			t.Fatalf("first cancel: %v", err)
+		}
+		if err := svc.Cancel(ctx, id, "", allow); !errors.Is(err, service.ErrConflict) {
+			t.Errorf("second cancel = %v, want ErrConflict", err)
+		}
+	})
+
+	t.Run("a past appointment cannot be cancelled", func(t *testing.T) {
+		d := testsupport.NewDonor(t, pool, "gone@example.test", "Already Gone")
+		id := mkAppt(t, pool, d, center, "-2 days", "scheduled")
+		if err := svc.Cancel(ctx, id, "", allow); !errors.Is(err, service.ErrConflict) {
+			t.Errorf("cancelling a past appointment = %v, want ErrConflict", err)
+		}
+	})
+
+	t.Run("reschedule into the future", func(t *testing.T) {
+		d := testsupport.NewDonor(t, pool, "moveme@example.test", "Move Me")
+		id := mkAppt(t, pool, d, center, "5 days", "scheduled")
+		to := time.Now().Add(10 * 24 * time.Hour).Truncate(time.Second)
+		if err := svc.Reschedule(ctx, id, to, allow); err != nil {
+			t.Fatalf("reschedule: %v", err)
+		}
+		var at time.Time
+		if err := pool.QueryRow(ctx, `SELECT scheduled_at FROM appointments WHERE id = $1`, id).Scan(&at); err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		if !at.Equal(to) {
+			t.Errorf("scheduled_at = %v, want %v", at, to)
+		}
+	})
+
+	t.Run("reschedule into the past is refused", func(t *testing.T) {
+		d := testsupport.NewDonor(t, pool, "backwards@example.test", "Backwards")
+		id := mkAppt(t, pool, d, center, "5 days", "scheduled")
+		if err := svc.Reschedule(ctx, id, time.Now().Add(-time.Hour), allow); !errors.Is(err, service.ErrInvalid) {
+			t.Errorf("rescheduling into the past = %v, want ErrInvalid", err)
+		}
+	})
+
+	t.Run("a checked-in appointment cannot be moved", func(t *testing.T) {
+		d := testsupport.NewDonor(t, pool, "inchair@example.test", "In The Chair")
+		id := mkAppt(t, pool, d, center, "1 hour", "checked_in")
+		if err := svc.Reschedule(ctx, id, time.Now().Add(72*time.Hour), allow); !errors.Is(err, service.ErrConflict) {
+			t.Errorf("rescheduling a checked-in appointment = %v, want ErrConflict", err)
+		}
+		if err := svc.Cancel(ctx, id, "", allow); !errors.Is(err, service.ErrConflict) {
+			t.Errorf("cancelling a checked-in appointment = %v, want ErrConflict", err)
+		}
+	})
+
+	t.Run("out of scope is not found", func(t *testing.T) {
+		d := testsupport.NewDonor(t, pool, "notyours@example.test", "Not Yours")
+		id := mkAppt(t, pool, d, center, "5 days", "scheduled")
+		deny := func(int64, int64) bool { return false }
+		if err := svc.Cancel(ctx, id, "", deny); !errors.Is(err, service.ErrNotFound) {
+			t.Errorf("cancelling out of scope = %v, want ErrNotFound", err)
+		}
+	})
+}
+
+// mkAppt inserts an appointment offset from now by a Postgres interval string.
+func mkAppt(t *testing.T, pool *pgxpool.Pool, donorID, centerID int64, offset, status string) int32 {
+	t.Helper()
+	var id int32
+	err := pool.QueryRow(context.Background(), `
+		INSERT INTO appointments (donor_id, center_id, scheduled_at, status)
+		VALUES ($1, $2, now() + $3::interval, $4::appointment_status) RETURNING id`,
+		donorID, centerID, offset, status).Scan(&id)
+	if err != nil {
+		t.Fatalf("insert appointment: %v", err)
+	}
+	return id
 }
