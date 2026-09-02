@@ -138,7 +138,7 @@ func TestTheSeededPolicySetCanDecide(t *testing.T) {
 
 func sameJSON(t *testing.T, a, b json.RawMessage) bool {
 	t.Helper()
-	var x, y interface{}
+	var x, y any
 	if err := json.Unmarshal(a, &x); err != nil {
 		t.Fatalf("seed value is not JSON: %s", a)
 	}

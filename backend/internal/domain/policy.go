@@ -213,7 +213,7 @@ type PolicyRow struct {
 // stored JSONB cannot change the fingerprint. Postgres already normalises
 // `jsonb`, but the fingerprint must not depend on that remaining true.
 func canonicalJSON(v json.RawMessage) []byte {
-	var any interface{}
+	var any any
 	if err := json.Unmarshal(v, &any); err != nil {
 		return v // Unparseable: fingerprint it verbatim rather than losing it.
 	}
@@ -441,7 +441,7 @@ func (p *Policies) AllocationMinRemaining() (time.Duration, error) {
 	return p.Hours(KeyAllocationMinRemaining)
 }
 
-func (p *Policies) decode(key PolicyKey, into interface{}) error {
+func (p *Policies) decode(key PolicyKey, into any) error {
 	raw, ok := p.raw[key]
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrPolicyMissing, key)

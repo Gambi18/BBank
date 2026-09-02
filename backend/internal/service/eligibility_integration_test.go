@@ -425,7 +425,7 @@ func agreeEmail(i int) string {
 
 // anyBool reads the view's `is_eligible_today`, which is a CASE expression and
 // so arrives untyped. nil means the view could not decide.
-func anyBool(v interface{}) *bool {
+func anyBool(v any) *bool {
 	switch b := v.(type) {
 	case nil:
 		return nil
@@ -437,7 +437,7 @@ func anyBool(v interface{}) *bool {
 	return nil
 }
 
-func reasonString(v interface{}) string {
+func reasonString(v any) string {
 	switch s := v.(type) {
 	case string:
 		return s
