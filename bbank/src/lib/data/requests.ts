@@ -1,5 +1,5 @@
 import 'server-only'
-import { apiListOrEmpty } from '../apiClient'
+import { apiListOrEmpty, type Page } from '../apiClient'
 
 export interface DonationRequest {
     id: number
@@ -25,8 +25,19 @@ export interface DonationRequest {
  * appointment" count would be wrong (WI-22).
  */
 export async function listRequests(status: string | null = 'pending'): Promise<DonationRequest[]> {
+    return (await listRequestsPage(status)).items
+}
+
+/**
+ * The same read, keeping the `page` block.
+ *
+ * Counts must come from `page.total`, never from `items.length`: the API caps a
+ * page at 25 (§6.3), so a dashboard counting the array says "25 waiting"
+ * forever once there are more than 25.
+ */
+export async function listRequestsPage(status: string | null = 'pending'): Promise<{ items: DonationRequest[]; page?: Page }> {
     const qs = status ? `?status=${encodeURIComponent(status)}` : ''
-    return (await apiListOrEmpty<DonationRequest>(`/api/v1/donation-requests${qs}`)).items
+    return apiListOrEmpty<DonationRequest>(`/api/v1/donation-requests${qs}`)
 }
 
 export interface RejectionReasonOption {

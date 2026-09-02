@@ -1,23 +1,26 @@
 import Link from 'next/link'
 import { FaCalendarCheck, FaInbox, FaUserPlus, FaUsers, FaArrowRight } from 'react-icons/fa6'
 import { listDonors } from '@/lib/data/donors'
-import { listAppointments } from '@/lib/data/appointments'
-import { listRequests } from '@/lib/data/requests'
+import { listAppointmentsPage } from '@/lib/data/appointments'
+import { listRequestsPage } from '@/lib/data/requests'
 import { createDonor } from '@/lib/actions/donors'
 
 async function admin() {
     // `limit: 1` because only the count is needed here — the envelope's `total`
     // is the whole registry, so there is no reason to pull every row to call
     // `.length` on it.
+    // All three take the count from `page.total`. Counting `items.length` reads
+    // the length of ONE PAGE — capped at 25 by §6.3 — so a busy inbox would say
+    // "25 pending" forever.
     const [appointments, requests, donors] = await Promise.all([
-        listAppointments(),
-        listRequests(),
+        listAppointmentsPage(),
+        listRequestsPage(),
         listDonors({ limit: 1 }),
     ])
 
     const statCards = [
-        { href: '/admin/appointments', icon: FaCalendarCheck, label: 'Appointments', value: appointments.length, hint: 'scheduled' },
-        { href: '/admin/requests', icon: FaInbox, label: 'Requests', value: requests.length, hint: 'pending review' },
+        { href: '/admin/appointments', icon: FaCalendarCheck, label: 'Appointments', value: appointments.page?.total ?? appointments.items.length, hint: 'scheduled' },
+        { href: '/admin/requests', icon: FaInbox, label: 'Requests', value: requests.page?.total ?? requests.items.length, hint: 'pending review' },
         { href: '/admin/donors', icon: FaUsers, label: 'Donors', value: donors.page?.total ?? donors.items.length, hint: 'in the registry' },
     ]
 

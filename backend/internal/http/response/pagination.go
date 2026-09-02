@@ -1,6 +1,7 @@
 package response
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 )
@@ -42,7 +43,12 @@ func ParsePaging(w http.ResponseWriter, r *http.Request) (Paging, bool) {
 			// and reading it as the latter is how unbounded scans come back.
 			BadRequest(w, r, "limit must be greater than zero", Detail{Field: "limit", Issue: "must be > 0"})
 			return p, false
-		case int32(n) > MaxLimit:
+		// Compared as `int`, converted afterwards. Converting first — which is
+		// what `int32(n) > MaxLimit` did — wraps a value above MaxInt32 to a
+		// NEGATIVE int32, skipping the clamp entirely and reaching Postgres as
+		// `LIMIT -2147483548`. A 500 from a query string a client could send by
+		// accident.
+		case n > int(MaxLimit):
 			p.Limit = MaxLimit
 		default:
 			p.Limit = int32(n)
@@ -51,7 +57,10 @@ func ParsePaging(w http.ResponseWriter, r *http.Request) (Paging, bool) {
 
 	if v := r.URL.Query().Get("offset"); v != "" {
 		n, err := strconv.Atoi(v)
-		if err != nil || n < 0 {
+		// The upper bound is checked before the conversion, for the same reason
+		// as the limit. An offset past the end of any table we will ever have is
+		// a client bug worth naming rather than silently wrapping negative.
+		if err != nil || n < 0 || n > math.MaxInt32 {
 			BadRequest(w, r, "offset must be a non-negative integer", Detail{Field: "offset", Issue: "must be >= 0"})
 			return p, false
 		}

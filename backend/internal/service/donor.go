@@ -143,7 +143,7 @@ func (s *DonorService) Create(ctx context.Context, p CreateParams, allowClinical
 		return 0, fmt.Errorf("%w: %s", ErrInvalid, err.Error())
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(p.Password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(p.Password), BcryptCost)
 	if err != nil {
 		return 0, fmt.Errorf("hash password: %w", err)
 	}
@@ -207,18 +207,12 @@ func (s *DonorService) Update(ctx context.Context, id int64, p UpdateParams, all
 		return err
 	}
 
-	gender, err := domain.ParseGender(p.Gender)
-	if err != nil {
-		return fmt.Errorf("%w: %s", ErrInvalid, err.Error())
-	}
-
-	d := domain.Donor{Email: current.Email, FullName: strings.TrimSpace(p.FullName), Phone: p.Phone}
+	// Every field is a pointer, and nil means "not supplied": the query
+	// COALESCEs it to the stored value. A full-row UPDATE here wrote NULL over
+	// anything the caller omitted, so saving a phone number from the settings
+	// form erased the donor's emergency contact.
 	arg := store.UpdateDonorProfileParams{
 		UserID:                id,
-		FullName:              d.FullName,
-		DateOfBirth:           pgtype.Date{Time: p.DateOfBirth, Valid: !p.DateOfBirth.IsZero()},
-		Gender:                store.Gender(gender),
-		ContactPhone:          p.Phone,
 		AddressLine:           p.Address,
 		City:                  p.City,
 		Region:                p.Region,
@@ -227,9 +221,39 @@ func (s *DonorService) Update(ctx context.Context, id int64, p UpdateParams, all
 		EmergencyContactPhone: p.EmergencyContactPhone,
 	}
 
-	// Carry the stored clinical values forward unless a caller entitled to
-	// change them supplied new ones.
-	arg.BloodGroup, arg.Rhesus = current.BloodGroup, current.Rhesus
+	name := strings.TrimSpace(p.FullName)
+	if name != "" {
+		arg.FullName = &name
+	}
+	if p.Phone != "" {
+		arg.ContactPhone = &p.Phone
+	}
+	if !p.DateOfBirth.IsZero() {
+		arg.DateOfBirth = pgtype.Date{Time: p.DateOfBirth, Valid: true}
+	}
+	if p.Gender != "" {
+		gender, err := domain.ParseGender(p.Gender)
+		if err != nil {
+			return fmt.Errorf("%w: %s", ErrInvalid, err.Error())
+		}
+		g := store.Gender(gender)
+		arg.Gender = &g
+	}
+
+	// The domain check runs against the RESULTING record — the supplied values
+	// where given, the stored ones where not — so a partial update cannot be
+	// validated against a half-empty struct and pass.
+	d := domain.Donor{Email: current.Email, FullName: current.FullName, Phone: current.ContactPhone}
+	if name != "" {
+		d.FullName = name
+	}
+	if arg.BloodGroup = current.BloodGroup; arg.BloodGroup != nil {
+		d.BloodGroup = domain.BloodGroup(*current.BloodGroup)
+	}
+	if arg.Rhesus = current.Rhesus; arg.Rhesus != nil {
+		d.Rhesus = domain.Rhesus(*current.Rhesus)
+	}
+	// Clinical values change only for a caller entitled to set them.
 	if allowClinical && p.BloodGroup != nil && p.Rhesus != nil {
 		d.BloodGroup, d.Rhesus = domain.BloodGroup(*p.BloodGroup), domain.Rhesus(*p.Rhesus)
 		bg, rh := store.BloodGroup(*p.BloodGroup), store.Rhesus(*p.Rhesus)

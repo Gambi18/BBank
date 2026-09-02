@@ -4,7 +4,7 @@ import {
     FaUser, FaHeartPulse, FaCalendarCheck, FaDroplet, FaPen, FaArrowRight,
 } from 'react-icons/fa6'
 import { getDonor, bloodType } from '@/lib/data/donors'
-import { listAppointments } from '@/lib/data/appointments'
+import { listAppointments, appointmentBadge } from '@/lib/data/appointments'
 import { requestAppointment } from '@/lib/actions/requests'
 
 const fmtDate = (d: string) =>
@@ -21,7 +21,11 @@ async function DonorDetails({ params }: { params: Promise<{ id: string }> }) {
 
     // No `?donor_id=` — the API scopes the list from the token. Passing an id
     // here is what the A14 bug did.
-    const appointments = await listAppointments()
+    // Narrowed to the donor whose page this is. Without the id, this rendered
+    // the CALLER's appointments under their heading — for staff or an admin
+    // viewing someone else, that meant somebody else's list entirely. The API
+    // ANDs the filter with the caller's scope, so it can only ever narrow.
+    const appointments = await listAppointments(Number(id))
 
     const firstName = donorData.full_name?.split(' ')[0] || 'Donor'
     const profileIncomplete = !donorData.blood_group || !donorData.contact_phone
@@ -123,7 +127,7 @@ async function DonorDetails({ params }: { params: Promise<{ id: string }> }) {
                                             <div className='text-xs text-zinc-500 uppercase tracking-wider'>Scheduled</div>
                                             <div className='font-semibold mt-0.5'>{fmtDate(appt.appointment_date)}</div>
                                         </div>
-                                        <span className="badge badge-green">Confirmed</span>
+                                        <span className={appointmentBadge(appt.status).className}>{appointmentBadge(appt.status).label}</span>
                                     </div>
                                 </li>
                             ))

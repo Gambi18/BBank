@@ -50,10 +50,28 @@ INSERT INTO donor_profiles (user_id, full_name, date_of_birth, gender,
 SELECT id, $3, $4, $5, $6, $7, $8, $9 FROM new_user
 RETURNING user_id;
 
+-- PATCH semantics: a field the caller omits keeps its stored value.
+--
+-- This was a full-row UPDATE of 12 columns, so every save wrote NULL over any
+-- field the form did not send — and the donor settings form sends neither
+-- national_id nor either emergency contact, so saving a phone number silently
+-- erased the person to call in an emergency. COALESCE makes "absent" and
+-- "cleared" different things, which is what PATCH means.
+--
+-- date_of_birth is NOT NULL in the schema, so COALESCE also stops an omitted
+-- date becoming a 23502 the error mapper does not translate (a bare 500).
 -- name: UpdateDonorProfile :exec
 UPDATE donor_profiles
-   SET full_name = $2, date_of_birth = $3, gender = $4,
-       blood_group = $5, rhesus = $6, contact_phone = $7,
-       address_line = $8, city = $9, region = $10,
-       national_id = $11, emergency_contact_name = $12, emergency_contact_phone = $13
- WHERE user_id = $1;
+   SET full_name               = COALESCE(sqlc.narg('full_name'), full_name),
+       date_of_birth           = COALESCE(sqlc.narg('date_of_birth')::date, date_of_birth),
+       gender                  = COALESCE(sqlc.narg('gender')::gender, gender),
+       blood_group             = COALESCE(sqlc.narg('blood_group')::blood_group, blood_group),
+       rhesus                  = COALESCE(sqlc.narg('rhesus')::rhesus, rhesus),
+       contact_phone           = COALESCE(sqlc.narg('contact_phone'), contact_phone),
+       address_line            = COALESCE(sqlc.narg('address_line'), address_line),
+       city                    = COALESCE(sqlc.narg('city'), city),
+       region                  = COALESCE(sqlc.narg('region'), region),
+       national_id             = COALESCE(sqlc.narg('national_id'), national_id),
+       emergency_contact_name  = COALESCE(sqlc.narg('emergency_contact_name'), emergency_contact_name),
+       emergency_contact_phone = COALESCE(sqlc.narg('emergency_contact_phone'), emergency_contact_phone)
+ WHERE user_id = sqlc.arg('user_id');

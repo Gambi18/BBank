@@ -796,3 +796,55 @@ func TestFR11_CancelAndRescheduleAreOwnershipScoped(t *testing.T) {
 		t.Errorf("a malformed timestamp = %d, want 422", got.status)
 	}
 }
+
+// Staff donor access must be CONSISTENT between the list and the single read.
+//
+// It was not. §7.6 grants staff `CRU` on `donor_profiles` scoped `ctr`, but
+// `donor_profiles` has no centre column — a donor may attend any centre — so
+// `ctr` was unimplementable and each code path guessed differently: `list` fell
+// through to the *entire* registry, while `resolveOwned` asked Permits for a row
+// with a nil centre, which `ScopeCenter` always rejects, so every single-donor
+// read was 404. Staff could see every donor at once and none of them
+// individually.
+//
+// TRD §6.5 settles the direction: `GET /api/v1/donors` is granted to staff as
+// registry search, with `center_id` an optional FILTER. Check-in (WI-39) needs
+// it too — a donor walking in may never have attended this centre before.
+func TestFR65_StaffDonorAccessIsConsistent(t *testing.T) {
+	h := newHarness(t)
+	center := testsupport_CenterID(t, h)
+	donorID := h.donor(t, "registry@example.test", "Registry Donor")
+	h.user(t, "desk.staff@example.test", "staff", &center)
+	staff := h.token(t, "desk.staff@example.test")
+
+	list := h.do(t, http.MethodGet, "/api/v1/donors", staff, "")
+	if list.status != http.StatusOK {
+		t.Fatalf("staff registry list = %d", list.status)
+	}
+	listsThem := strings.Contains(list.body, "registry@example.test")
+
+	single := h.do(t, http.MethodGet, "/api/v1/donors/"+itoa64(donorID), staff, "")
+	readsThem := single.status == http.StatusOK
+
+	if listsThem != readsThem {
+		t.Fatalf("staff can list this donor (%v) but read them individually (%v) — "+
+			"the two paths disagree about what `ctr` means on donor_profiles", listsThem, readsThem)
+	}
+	if !readsThem {
+		t.Fatalf("staff cannot read a donor record (%d); check-in (WI-39) depends on it", single.status)
+	}
+	if got := h.do(t, http.MethodGet, "/api/v1/donors/"+itoa64(donorID)+"/eligibility", staff, ""); got.status != http.StatusOK {
+		t.Errorf("staff cannot read donor eligibility: %d", got.status)
+	}
+
+	// A donor still sees only themselves, whichever path they take.
+	other := h.donor(t, "otherdonor@example.test", "Other Donor")
+	self := h.token(t, "registry@example.test")
+	own := h.do(t, http.MethodGet, "/api/v1/donors", self, "")
+	if strings.Contains(own.body, "otherdonor@example.test") {
+		t.Error("a donor listing the registry saw another donor")
+	}
+	if got := h.do(t, http.MethodGet, "/api/v1/donors/"+itoa64(other), self, ""); got.status != http.StatusNotFound {
+		t.Errorf("a donor read another donor's record: %d, want 404", got.status)
+	}
+}

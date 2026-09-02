@@ -2,8 +2,11 @@
 
 import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
+import { cookies } from 'next/headers'
 import { apiPost, apiPatch, ApiError } from '../apiClient'
 import { flash } from '../flash'
+import { COOKIE_SECURE } from '../cookies'
+import { INVITE_TOKEN_COOKIE } from '../routes'
 
 /**
  * User administration (`WI-18`, `FR-66`) — invite, suspend, reactivate, change
@@ -59,12 +62,23 @@ export async function inviteUser(formData: FormData) {
     }
 
     revalidatePath('/admin/users')
-    // The token is shown once, here, because nothing can reproduce it: only its
-    // hash is stored. WI-79 replaces this with an email and the success message
-    // becomes "invitation sent".
-    redirect(flash('/admin/users', {
-        success: `Invitation created. Send this link — it is shown only once: /accept-invite?token=${token}`,
-    }))
+    // The token goes in a cookie, NOT in the redirect URL.
+    //
+    // A query string lands in the browser address bar, in history, in the
+    // reverse-proxy access log, and in the `Referer` of anything that page then
+    // loads. That is four places a one-time credential outlives the moment it
+    // was needed — which defeats the point of storing only its hash.
+    //
+    // A short-lived, HttpOnly, same-site cookie is read once by the page and
+    // cleared. WI-79 removes this entirely by emailing the link instead.
+    ;(await cookies()).set(INVITE_TOKEN_COOKIE, token, {
+        httpOnly: true,
+        sameSite: 'strict',
+        secure: COOKIE_SECURE,
+        path: '/admin/users',
+        maxAge: 300,
+    })
+    redirect(flash('/admin/users', { success: 'Invitation created — copy the link below and send it.' }))
 }
 
 export async function setUserStatus(userId: number, status: string) {

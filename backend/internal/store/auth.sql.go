@@ -192,12 +192,32 @@ func (q *Queries) MarkSessionRotated(ctx context.Context, id int64) error {
 }
 
 const recordFailedLogin = `-- name: RecordFailedLogin :exec
-UPDATE users SET failed_login_count = failed_login_count + 1
-WHERE email = $1::citext
+UPDATE users
+   SET failed_login_count = failed_login_count + 1,
+       locked_until = CASE
+           WHEN failed_login_count + 1 >= $1::int
+           THEN now() + $2::interval
+           ELSE locked_until
+       END
+WHERE email = $3::citext
 `
 
-func (q *Queries) RecordFailedLogin(ctx context.Context, email string) error {
-	_, err := q.db.Exec(ctx, recordFailedLogin, email)
+type RecordFailedLoginParams struct {
+	Threshold int32
+	Lockout   pgtype.Interval
+	Email     string
+}
+
+// Counts the failure AND locks the account once the threshold is reached.
+//
+// Setting only the counter left `locked_until` NULL forever, so the
+// ErrAccountLocked branch, the 423 status and the frontend's "temporarily
+// locked" message were all unreachable and online guessing was unbounded. The
+// lock is a short cool-off, not a ban: an attacker is slowed to a crawl, while
+// a legitimate user who mistyped several times waits minutes rather than
+// needing an administrator.
+func (q *Queries) RecordFailedLogin(ctx context.Context, arg RecordFailedLoginParams) error {
+	_, err := q.db.Exec(ctx, recordFailedLogin, arg.Threshold, arg.Lockout, arg.Email)
 	return err
 }
 

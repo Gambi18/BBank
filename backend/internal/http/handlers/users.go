@@ -40,10 +40,14 @@ func NewUserHandler(svc *service.UserService, idem middleware.IdempotencyStore) 
 func (h *UserHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	replay := middleware.Idempotency(h.idem, false)
+	// The invite response carries the one-time token, so its body is never
+	// stored: a credential in a replay table outlives the request that created
+	// it, which is the thing hashing it everywhere else was meant to prevent.
+	replayNoBody := middleware.Idempotency(h.idem, false, middleware.WithoutResponseBody())
 
 	r.With(middleware.RequirePermission("users", domain.Read)).Get("/", h.list)
 	r.With(middleware.RequirePermission("users", domain.Read)).Get("/{id}", h.get)
-	r.With(middleware.RequirePermission("users", domain.Create), replay).Post("/", h.invite)
+	r.With(middleware.RequirePermission("users", domain.Create), replayNoBody).Post("/", h.invite)
 	r.With(middleware.RequirePermission("users", domain.Update), replay).Patch("/{id}", h.patch)
 	return r
 }

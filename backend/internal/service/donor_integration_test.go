@@ -303,3 +303,116 @@ func TestDonorListAndEligibility(t *testing.T) {
 		t.Errorf("update missing donor = %v, want ErrNotFound", err)
 	}
 }
+
+// An invalid blood type from an API client must be a 422-shaped ErrInvalid, not
+// a 500 from Postgres refusing an enum value.
+func TestInvalidBloodTypeIsAValidationErrorNotACrash(t *testing.T) {
+	pool := testsupport.Pool(t)
+	svc := service.NewDonorService(store.New(pool))
+	ctx := context.Background()
+
+	group, badRh := "A", "x"
+	p := baseCreate("badrhesus@example.test")
+	p.BloodGroup, p.Rhesus = &group, &badRh
+	if _, err := svc.Create(ctx, p, true); !errors.Is(err, service.ErrInvalid) {
+		t.Fatalf("an invalid rhesus = %v, want ErrInvalid", err)
+	}
+
+	badGroup, rh := "C", "positive"
+	p2 := baseCreate("badgroup@example.test")
+	p2.BloodGroup, p2.Rhesus = &badGroup, &rh
+	if _, err := svc.Create(ctx, p2, true); !errors.Is(err, service.ErrInvalid) {
+		t.Fatalf("an invalid blood group = %v, want ErrInvalid", err)
+	}
+
+	if n := testsupport.CountRows(t, pool,
+		`SELECT count(*) FROM users WHERE email IN ('badrhesus@example.test','badgroup@example.test')`); n != 0 {
+		t.Error("a rejected registration still created a user")
+	}
+}
+
+// PATCH means "change what I sent". A field the caller omits keeps its value.
+//
+// It was a full-row UPDATE of 12 columns, so every save wrote NULL over
+// anything the form did not send — and the donor settings form sends neither
+// national_id nor either emergency contact, so saving a phone number silently
+// erased the person to call in an emergency.
+func TestUpdateDoesNotBlankOmittedFields(t *testing.T) {
+	pool := testsupport.Pool(t)
+	svc := service.NewDonorService(store.New(pool))
+	ctx := context.Background()
+
+	id, err := svc.Create(ctx, baseCreate("partial@example.test"), false)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Details a donor gave once and the settings form never sends back.
+	if _, err := pool.Exec(ctx, `
+		UPDATE donor_profiles
+		   SET national_id = 'NID-12345',
+		       emergency_contact_name = 'Next Of Kin',
+		       emergency_contact_phone = '+237699000111',
+		       city = 'Douala', region = 'Littoral'
+		 WHERE user_id = $1`, id); err != nil {
+		t.Fatalf("seed details: %v", err)
+	}
+
+	// The settings form's payload: name, dob, gender, phone, address only.
+	if err := svc.Update(ctx, id, service.UpdateParams{
+		FullName: "Renamed Person", Gender: "female", Phone: "+237600222333",
+		DateOfBirth: time.Date(1994, 6, 1, 0, 0, 0, 0, time.UTC),
+	}, false); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	var name, phone, nid, kin, kinPhone, city, region string
+	err = pool.QueryRow(ctx, `
+		SELECT full_name, contact_phone,
+		       coalesce(national_id,''), coalesce(emergency_contact_name,''),
+		       coalesce(emergency_contact_phone,''), coalesce(city,''), coalesce(region,'')
+		FROM donor_profiles WHERE user_id = $1`, id).
+		Scan(&name, &phone, &nid, &kin, &kinPhone, &city, &region)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+
+	if name != "Renamed Person" || phone != "+237600222333" {
+		t.Errorf("the supplied fields did not apply: %q / %q", name, phone)
+	}
+	for field, got := range map[string]string{
+		"national_id":             nid,
+		"emergency_contact_name":  kin,
+		"emergency_contact_phone": kinPhone,
+		"city":                    city,
+		"region":                  region,
+	} {
+		if got == "" {
+			t.Errorf("%s was blanked by an update that never mentioned it", field)
+		}
+	}
+}
+
+// date_of_birth is NOT NULL, and an omitted date must keep the stored one
+// rather than becoming a 23502 the error mapper does not translate — a bare 500.
+func TestUpdateWithNoDateOfBirthKeepsTheStoredOne(t *testing.T) {
+	pool := testsupport.Pool(t)
+	svc := service.NewDonorService(store.New(pool))
+	ctx := context.Background()
+
+	id, err := svc.Create(ctx, baseCreate("nodob@example.test"), false)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := svc.Update(ctx, id, service.UpdateParams{
+		FullName: "Still Here", Gender: "female", Phone: "+237600222444",
+	}, false); err != nil {
+		t.Fatalf("update with no DOB = %v, want it to keep the stored date", err)
+	}
+	var dob time.Time
+	if err := pool.QueryRow(ctx, `SELECT date_of_birth FROM donor_profiles WHERE user_id = $1`, id).Scan(&dob); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if dob.Year() != 1994 {
+		t.Errorf("date_of_birth = %v, want the stored 1994 date", dob)
+	}
+}

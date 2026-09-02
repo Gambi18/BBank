@@ -42,12 +42,12 @@ the legacy scope; it will be rebaselined against the new scope at the `WI-06` bo
 
 | Area                     | Status | Notes |
 |--------------------------|:------:|-------|
-| Backend API (CRUD)       |  96%   | **`internal/legacy` is deleted — the strangler finished** (`WI-22`). Every endpoint is layered (`cmd/api`, `internal/{domain,service,store,http}`), with one pgx pool instead of two. Approving a request is now a **status transition, not a DELETE**. `WI-21`: `/api/v1` is canonical and enveloped, `/api/go` is a rewriting alias with `Deprecation`/`Sunset`, list endpoints are bounded, and idempotency storage is live |
-| Frontend UI / pages      |  97%   | Design refinement pass: Outfit font, tinted shadows, grain overlay, staggered layouts, richer empty/loading states, custom 404, legal pages, OG meta, skip-to-content. `WI-22` restored every switched-off write path — signup (with auto-login), donor profile edit, admin add-donor — and added the reject UI, whose reason list is **read from the API** rather than hardcoded. Four role areas (`/staff`, `/lab`, `/inventory`, `/hospital`) are honest placeholders |
-| Auth & Security          |  98%   | **ES256 JWT + rotating refresh** (`WI-17`) now **verified on every request**, with the full TRD §7.6 permission matrix and §7.7 ownership enforced as middleware (`WI-20`). Ownership comes from the `sub`/`cid`/`hid` claims — never from a query parameter. **The frontend now verifies the same token** (`WI-19`): `proxy.ts` on the Edge runtime, server components on Node, one `jose` module for both. **`WI-18` closes the last credential gap**: the first admin is bootstrapped from an env-supplied one-time *invitation*, never a literal, and invite / suspend / reactivate / role-change are live. A suspended account stops working on its **next request** — verified over HTTP with a live token |
+| Backend API (CRUD)       |  96%   | **`internal/legacy` is deleted — the strangler finished** (`WI-22`). Every endpoint is layered (`cmd/api`, `internal/{domain,service,store,http}`), with one pgx pool instead of two. Approving a request is now a **status transition, not a DELETE**. `WI-21`: `/api/v1` is canonical and enveloped, `/api/go` is a rewriting alias with `Deprecation`/`Sunset`, list endpoints are bounded, and idempotency storage is live . The 2026-09-02 sweep made the donor update a real **PATCH** (it had been writing NULL over every omitted field, erasing emergency contacts), stopped two ordinary inputs — an invalid rhesus and an over-`int32` `?limit=` — from returning 500, and started the two retention sweeps the schema documents but nothing ran |
+| Frontend UI / pages      |  97%   | Design refinement pass: Outfit font, tinted shadows, grain overlay, staggered layouts, richer empty/loading states, custom 404, legal pages, OG meta, skip-to-content. `WI-22` restored every switched-off write path — signup (with auto-login), donor profile edit, admin add-donor — and added the reject UI, whose reason list is **read from the API** rather than hardcoded. Four role areas (`/staff`, `/lab`, `/inventory`, `/hospital`) are honest placeholders. The 2026-09-02 sweep fixed what the admin console **showed**: appointment status was a hardcoded green "Confirmed", so cancelled and missed appointments read as confirmed; `/donor/{id}` listed the caller's own appointments under another donor's heading; and the dashboard counted one 25-row page instead of `page.total` |
+| Auth & Security          |  98%   | **ES256 JWT + rotating refresh** (`WI-17`) now **verified on every request**, with the full TRD §7.6 permission matrix and §7.7 ownership enforced as middleware (`WI-20`). Ownership comes from the `sub`/`cid`/`hid` claims — never from a query parameter. **The frontend now verifies the same token** (`WI-19`): `proxy.ts` on the Edge runtime, server components on Node, one `jose` module for both. **`WI-18` closes the last credential gap**: the first admin is bootstrapped from an env-supplied one-time *invitation*, never a literal, and invite / suspend / reactivate / role-change are live. A suspended account stops working on its **next request** — verified over HTTP with a live token. The 2026-09-02 sweep closed five holes in that work: the login lockout was **counted but never applied**, so `NFR-12` was unreachable; TRD §5.1's bcrypt cost reached only the dummy hash, making the timing guard a louder oracle than none; a suspended account's invitation stayed live; and the one-time invite token was stored both in the replay table and in a redirect URL |
 | Data model / DB          |  97%   | **Schema complete.** Migrations `000000`–`000016` verified `up → down -all → up` on a fresh database: 26 tables, 21 enums, 4 views, 82 indexes, 18 triggers, 43 FKs, 14 policy rows, plus `000016` `idempotency_keys` (`WI-21`). Remaining: drop-legacy-donors, deliberately deferred to `WI-37` |
 | DevOps / Docker          |  92%   | + golang-migrate, `migrate` compose service, env-injected secrets, server timeouts, graceful shutdown, structured logs, `/healthz` + `/readyz` |
-| Testing                  |  68%   | CI skeleton (gofmt, vet, build, golangci-lint, govulncheck, tsc, eslint, npm audit, gitleaks, migrate up/down/up). Unit tests for the domain (ABO, blood groups, seed cross-check, RBAC matrix + transitions) and the authorization middleware — **all 660 matrix cells asserted over HTTP, granted and denied**. `WI-21` adds the legacy-path rewrite table, the runtime shim toggle, pagination clamping, and idempotency replay/reuse/in-flight/5xx-release. `WI-22` adds the donation-request state machine and the FR-09 rejection vocabulary — including a test asserting no reason describes the *person* rather than the request. **`WI-29` adds the integration harness**: real PostgreSQL 18 via `testcontainers`, migrations applied with the same `golang-migrate` production uses, **34 tests** covering the approve/reject lifecycle, genuine concurrency (8 simultaneous approvals → exactly one appointment), refresh-token reuse revoking a family, idempotency claim/replay/release, and the legacy `requests` → `donation_requests` migration against a fixture containing the rows the old `confirm` deleted. Coverage gated in CI: **domain 99% (gate 90%), service 72% (gate 70%)**, verified non-vacuous. **`WI-30` adds the HTTP-layer regression suite**: 18 tests named for the requirement or defect each guards, driving the *real* router against a real database — the `WI-02` ownership regression with no `donor_id` parameter, the §7.6 matrix as mounted, auth boundaries, `TD-15` driver-error leakage, `TD-17` pagination bounds, the shim toggle, and `A8`. It caught a live authorization leak on its first run. Backend overall 59%. Remaining: browser E2E, and `FR-19` (blocked on `WI-26`) |
+| Testing                  |  70%   | CI skeleton (gofmt, vet, build, golangci-lint, govulncheck, tsc, eslint, npm audit, gitleaks, migrate up/down/up). Unit tests for the domain (ABO, blood groups, seed cross-check, RBAC matrix + transitions) and the authorization middleware — **all 660 matrix cells asserted over HTTP, granted and denied**. `WI-21` adds the legacy-path rewrite table, the runtime shim toggle, pagination clamping, and idempotency replay/reuse/in-flight/5xx-release. `WI-22` adds the donation-request state machine and the FR-09 rejection vocabulary — including a test asserting no reason describes the *person* rather than the request. **`WI-29` adds the integration harness**: real PostgreSQL 18 via `testcontainers`, migrations applied with the same `golang-migrate` production uses, **34 tests** covering the approve/reject lifecycle, genuine concurrency (8 simultaneous approvals → exactly one appointment), refresh-token reuse revoking a family, idempotency claim/replay/release, and the legacy `requests` → `donation_requests` migration against a fixture containing the rows the old `confirm` deleted. Coverage gated in CI: **domain 99% (gate 90%), service 72% (gate 70%)**, verified non-vacuous. **`WI-30` adds the HTTP-layer regression suite**: 18 tests named for the requirement or defect each guards, driving the *real* router against a real database — the `WI-02` ownership regression with no `donor_id` parameter, the §7.6 matrix as mounted, auth boundaries, `TD-15` driver-error leakage, `TD-17` pagination bounds, the shim toggle, and `A8`. It caught a live authorization leak on its first run. **The 2026-09-02 correctness sweep adds 11 more**, one per defect, and — because two of them turned out to prove nothing — establishes the discipline as a step, not an intention: every guard was deleted and its test watched go red. The admin-demotion race test passed with the row lock removed until it was rewritten to run eight concurrent demotions. Coverage: domain 98.5%, service 75.3%, backend overall 66.9%. Remaining: browser E2E, and `FR-19` (blocked on `WI-26`) |
 | Documentation            |  90%   | Full planning set (8,100+ lines): PRD, TRD, User Journey, UI/UX Brief, DB Schema, Implementation Plan — all cross-referenced by FR/NFR/WI ID |
 
 ### Planning documents (added 2026-09-01)
@@ -104,6 +104,7 @@ schema doc; route paths by the user journey. Other documents cite, never redefin
 - [x] Requests: reject (coded reason) and cancel endpoints (`WI-22`)
 - [x] Donors: create (public self-registration) and update (`WI-22`)
 - [x] Appointments: cancel + reschedule, and the idempotent no-show sweep (`WI-23`)
+- [x] Donor update is a real PATCH — an omitted field keeps its stored value
 - [ ] Session/JWT issuance from the backend (currently the frontend owns the cookie)
 
 ### Cross-cutting
@@ -128,6 +129,9 @@ schema doc; route paths by the user journey. Other documents cite, never redefin
 - [x] No credential literal anywhere; first admin bootstrapped by invitation (`WI-18`)
 - [x] Invite / suspend / reactivate / change role, with a last-admin guard (`WI-18`)
 - [x] HTTP-layer regression suite, named per requirement, verified non-vacuous (`WI-30`)
+- [x] Account lockout after repeated failed logins (`NFR-12`; the per-IP limiter is `WI-28`)
+- [x] One-time invitation token never in a URL, a log, or the replay table
+- [x] Retention sweeps: expired idempotency keys and sessions are deleted, not merely expired
 - [x] Concurrency proven, not assumed: simultaneous approvals, duplicate signups, key claims
 - [ ] Automated tests (handler, browser E2E) — `WI-30`
 - [x] CI skeleton (lint, vet, build, vuln + secret scan, migrations up/down/up)
@@ -229,6 +233,74 @@ _Resolved since this list was written:_ open CORS (now an explicit allowlist wit
 ---
 
 ## Changelog
+- **2026-09-02** — **A correctness sweep: 17 defects across the work of the last five items, each
+  fixed with a named test that fails without the fix.**
+  No new feature. An audit of everything `WI-18` through `WI-23` touched, on the principle that the
+  cheapest defect is the one found before the next work item is built on top of it. Grouped by what
+  they would have cost:
+
+  **Security.** `RecordFailedLogin` incremented the counter and never set `locked_until`, so the
+  `ErrAccountLocked` branch, the 423 status and the frontend's "temporarily locked" message were all
+  **unreachable** — online password guessing was unbounded (`NFR-12`, and the reason `WI-28` is now
+  partly done). `BcryptCost` — TRD §5.1's cost 12 — was applied **only** to the dummy hash on the
+  user-not-found path, while every real password took the library default of 10; that inverted the
+  defence it exists for, making "no such account" cost ~4× a real comparison and turning the timing
+  guard into a *louder* enumeration oracle than none. Suspending an account left its outstanding
+  invitation live, so an admin who thought better of an invite could still have the invitee activate
+  a working account; `AcceptInvite` also never checked the account's status. Both are now closed
+  independently, and the test pins each separately — with only the combined assertion, deleting
+  either left the suite green. The invitation token was stored in the **idempotency replay table**
+  as a response body: a one-time credential at rest, which is exactly what hashing it everywhere
+  else was meant to prevent (`WithoutResponseBody`). And the frontend put that same token in a
+  **redirect query string** — the address bar, browser history, the reverse-proxy access log, and
+  the `Referer` of anything the page then loaded. It now travels in a short-lived HttpOnly cookie.
+
+  **Data loss.** `UpdateDonorProfile` was a full-row `UPDATE` of 12 columns, so every save wrote
+  NULL over any field the caller omitted — and `/donor/settings` sends neither `national_id` nor
+  either emergency contact. **Saving a phone number erased the person to call in an emergency.** The
+  query now `COALESCE`s each column, which is what PATCH means, and the domain check runs against
+  the *resulting* record rather than a half-empty struct.
+
+  **Authorization.** §7.6 grants staff `CRU` on `donor_profiles` scoped `ctr`, but `donor_profiles`
+  has no centre column — deliberately, since a donor may attend any centre — so `ctr` was
+  unimplementable and the two code paths **guessed differently**: `list` fell through to the entire
+  registry while `resolveOwned` asked `Permits` for a row with a nil centre, which `ScopeCenter`
+  always rejects. Staff could see every donor at once and none of them individually. TRD §6.5
+  settles it — registry search, `center_id` an optional filter — and both paths now read one
+  function, default-deny, so a scope added later inherits nothing by omission.
+
+  **Correctness under concurrency.** `ensureNotLastAdmin` counted admins outside any transaction, so
+  concurrent demotions all saw a safe number and all succeeded, leaving **zero admins** — a state
+  with no recovery short of SQL. The count and the write now share a transaction and the count holds
+  a row lock on every active admin.
+
+  **Crashes from ordinary input.** Rhesus was validated for *presence* but never for *value*, so
+  `{"blood_group":"A","rhesus":"x"}` reached Postgres as an invalid enum and came back a 500 instead
+  of a 422. `ParsePaging` compared `int32(n) > MaxLimit`, converting **before** comparing, so
+  `?limit=2147483748` wrapped to a negative int32, skipped the clamp entirely and reached Postgres
+  as `LIMIT -2147483548`.
+
+  **Unbounded growth.** Two sweeps the schema documents and nothing ran: `idempotency_keys` has a
+  24-hour TTL (§6.4) and `DeleteExpiredSessions` had no caller. Both tables grew forever, the first
+  while retaining stored response bodies.
+
+  **Things shown wrong.** Both appointment tables hardcoded a green "Confirmed" badge, so a
+  **cancelled or missed appointment displayed as confirmed** — the API has returned `status` all
+  along and neither page read it. `/donor/{id}` listed appointments with no donor filter, rendering
+  the *caller's* appointments under that donor's heading; for an admin, that was every appointment
+  in the system. The admin dashboard counted `items.length` — one page, capped at 25 by §6.3 — so a
+  busy inbox would have read "25 pending" forever. And `apiClient` minted a fresh
+  `crypto.randomUUID()` per request as the `Idempotency-Key`, which **deduplicates nothing**: a
+  double-submitted form produced two different keys and two rows, while filling the replay table
+  with entries nothing would ever match. A key must identify the user's *intent*, so it has to be
+  minted where the intent is — `WI-77` wires that through.
+
+  **Every fix has a test, and every test was shown to fail without its fix.** That check was worth
+  doing: the first version of the admin-demotion race test **passed with the row lock removed** —
+  two goroutines never overlapped, so it proved nothing. It now runs eight concurrent demotions,
+  which empties the admin role reliably without the lock. Two of the invitation guards were likewise
+  unpinned, each satisfied by the other. `internal/domain` 98.5%, `internal/service` 75.3%,
+  both gates green; the generated store is unchanged and in sync.
 - **2026-09-02** — **`WI-23`: appointment cancel, reschedule, and the no-show sweep.**
   `FR-11` and `FR-13`. Both mutations lock the row before reading its status, so the check and the
   write cannot straddle another transaction, and both are authorized against the **locked** row —

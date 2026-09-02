@@ -80,3 +80,34 @@ func TestParsePagingRejectsMalformedValues(t *testing.T) {
 		}
 	}
 }
+
+// A value that overflows int32 must be clamped or refused, never truncated.
+//
+// The guard was `case int32(n) > MaxLimit`, which converts BEFORE comparing:
+// ?limit=2147483748 wraps to a negative int32, skips the clamp entirely, and
+// reaches Postgres as `LIMIT -2147483548` — a driver error surfacing as a 500
+// on a request a client could send by accident.
+func TestParsePagingSurvivesInt32Overflow(t *testing.T) {
+	overflow := []string{
+		"?limit=2147483648", // MaxInt32 + 1
+		"?limit=2147483748", // wraps to a negative int32
+		"?limit=4294967296", // wraps to 0
+		"?limit=99999999999",
+		"?offset=2147483648",
+		"?offset=4294967296",
+		"?offset=99999999999",
+	}
+	for _, q := range overflow {
+		p, status, _ := parse(t, q)
+		if status != 0 && status != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400 or a clamped 200", q, status)
+		}
+		// Whatever the outcome, the values handed to SQL must be sane.
+		if p.Limit < 0 || p.Limit > MaxLimit {
+			t.Errorf("%s produced limit=%d, outside (0, %d]", q, p.Limit, MaxLimit)
+		}
+		if p.Offset < 0 {
+			t.Errorf("%s produced a negative offset: %d", q, p.Offset)
+		}
+	}
+}

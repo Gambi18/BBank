@@ -29,6 +29,23 @@ var (
 // bcrypt cost 12, up from the library default of 10 (TRD §5.1). ~250ms on
 // commodity hardware, which is acceptable for a rate-limited login endpoint and
 // materially harder to brute force offline.
+// Login lockout (NFR-12). A short cool-off rather than a ban: it slows online
+// guessing to a crawl while a legitimate user who mistyped waits minutes, not
+// an administrator's working day. WI-92 adds the Redis rate limiter in front of
+// this; the two are complementary — one is per-account, the other per-IP.
+const (
+	MaxFailedLogins = 5
+	LockoutDuration = 15 * time.Minute
+)
+
+// BcryptCost is TRD §5.1's work factor, and must be used at EVERY site that
+// hashes a password.
+//
+// It was once used only for the dummy hash on the user-not-found path, while
+// real passwords took bcrypt.DefaultCost (10). That inverted the defence it
+// exists for: "no such account" then cost roughly four times a real
+// CompareHashAndPassword, so the timing difference was larger than having no
+// dummy hash at all — a louder enumeration oracle, not a quieter one.
 const BcryptCost = 12
 
 type AuthService struct {
@@ -83,7 +100,11 @@ func (s *AuthService) Login(ctx context.Context, in LoginInput) (*TokenPair, err
 	}
 
 	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(in.Password)) != nil {
-		if err := s.q.RecordFailedLogin(ctx, in.Email); err != nil {
+		if err := s.q.RecordFailedLogin(ctx, store.RecordFailedLoginParams{
+			Email:     in.Email,
+			Threshold: MaxFailedLogins,
+			Lockout:   pgtype.Interval{Microseconds: int64(LockoutDuration / time.Microsecond), Valid: true},
+		}); err != nil {
 			slog.ErrorContext(ctx, "cannot record failed login", "error", err)
 		}
 		return nil, ErrInvalidCredentials

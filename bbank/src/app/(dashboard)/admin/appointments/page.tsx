@@ -1,5 +1,5 @@
 import { FaCalendarCheck } from 'react-icons/fa6'
-import { listAppointments } from '@/lib/data/appointments'
+import { listAppointments, appointmentBadge } from '@/lib/data/appointments'
 
 const initials = (name: string) =>
     name.split(' ').map((p) => p[0]).filter(Boolean).slice(0, 2).join('').toUpperCase() || '?'
@@ -44,7 +44,7 @@ async function Appointments() {
                                     </td>
                                     <td className="font-mono text-xs">#{appointment.donor_id}</td>
                                     <td>{fmtDate(appointment.appointment_date)}</td>
-                                    <td><span className="badge badge-green">Confirmed</span></td>
+                                    <td><span className={appointmentBadge(appointment.status).className}>{appointmentBadge(appointment.status).label}</span></td>
                                 </tr>
                             ))}
                             {data.length === 0 && (

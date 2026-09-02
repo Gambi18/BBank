@@ -219,32 +219,49 @@ func (q *Queries) ListDonors(ctx context.Context, arg ListDonorsParams) ([]ListD
 
 const updateDonorProfile = `-- name: UpdateDonorProfile :exec
 UPDATE donor_profiles
-   SET full_name = $2, date_of_birth = $3, gender = $4,
-       blood_group = $5, rhesus = $6, contact_phone = $7,
-       address_line = $8, city = $9, region = $10,
-       national_id = $11, emergency_contact_name = $12, emergency_contact_phone = $13
- WHERE user_id = $1
+   SET full_name               = COALESCE($1, full_name),
+       date_of_birth           = COALESCE($2::date, date_of_birth),
+       gender                  = COALESCE($3::gender, gender),
+       blood_group             = COALESCE($4::blood_group, blood_group),
+       rhesus                  = COALESCE($5::rhesus, rhesus),
+       contact_phone           = COALESCE($6, contact_phone),
+       address_line            = COALESCE($7, address_line),
+       city                    = COALESCE($8, city),
+       region                  = COALESCE($9, region),
+       national_id             = COALESCE($10, national_id),
+       emergency_contact_name  = COALESCE($11, emergency_contact_name),
+       emergency_contact_phone = COALESCE($12, emergency_contact_phone)
+ WHERE user_id = $13
 `
 
 type UpdateDonorProfileParams struct {
-	UserID                int64
-	FullName              string
+	FullName              *string
 	DateOfBirth           pgtype.Date
-	Gender                Gender
+	Gender                *Gender
 	BloodGroup            *BloodGroup
 	Rhesus                *Rhesus
-	ContactPhone          string
+	ContactPhone          *string
 	AddressLine           *string
 	City                  *string
 	Region                *string
 	NationalID            *string
 	EmergencyContactName  *string
 	EmergencyContactPhone *string
+	UserID                int64
 }
 
+// PATCH semantics: a field the caller omits keeps its stored value.
+//
+// This was a full-row UPDATE of 12 columns, so every save wrote NULL over any
+// field the form did not send — and the donor settings form sends neither
+// national_id nor either emergency contact, so saving a phone number silently
+// erased the person to call in an emergency. COALESCE makes "absent" and
+// "cleared" different things, which is what PATCH means.
+//
+// date_of_birth is NOT NULL in the schema, so COALESCE also stops an omitted
+// date becoming a 23502 the error mapper does not translate (a bare 500).
 func (q *Queries) UpdateDonorProfile(ctx context.Context, arg UpdateDonorProfileParams) error {
 	_, err := q.db.Exec(ctx, updateDonorProfile,
-		arg.UserID,
 		arg.FullName,
 		arg.DateOfBirth,
 		arg.Gender,
@@ -257,6 +274,7 @@ func (q *Queries) UpdateDonorProfile(ctx context.Context, arg UpdateDonorProfile
 		arg.NationalID,
 		arg.EmergencyContactName,
 		arg.EmergencyContactPhone,
+		arg.UserID,
 	)
 	return err
 }

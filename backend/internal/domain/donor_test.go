@@ -134,3 +134,24 @@ func TestEnsureTransitionAllowsLegalMoves(t *testing.T) {
 		}
 	}
 }
+
+// Both halves of a blood type are validated. Rhesus was checked for presence
+// but never for value, so an API client sending {"blood_group":"A","rhesus":"x"}
+// reached Postgres as an invalid enum input and came back a 500.
+func TestValidateRejectsAnInvalidRhesus(t *testing.T) {
+	base := Donor{Email: "rh@example.test", FullName: "Rh Donor", BloodGroup: GroupA}
+	for _, bad := range []Rhesus{"x", "POSITIVE", "+", "pos", "unknown"} {
+		d := base
+		d.Rhesus = bad
+		if err := d.Validate(); !errors.Is(err, ErrInvalidRhesus) {
+			t.Errorf("rhesus %q = %v, want ErrInvalidRhesus", bad, err)
+		}
+	}
+	for _, good := range []Rhesus{RhPositive, RhNegative} {
+		d := base
+		d.Rhesus = good
+		if err := d.Validate(); err != nil {
+			t.Errorf("rhesus %q was rejected: %v", good, err)
+		}
+	}
+}

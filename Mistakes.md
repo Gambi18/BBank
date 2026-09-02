@@ -225,3 +225,73 @@ gone on passing if signature verification were removed entirely.
 **Solution:** flip a byte in the middle of the signature, and assert the string actually differs.
 **Prevention:** a negative test must be shown to fail. Before trusting one, break the thing it
 guards and watch it go red — the same rule already applied to the DSN gate and the coverage gate.
+
+### 2026-09-02 — Wrote the security constant, then used it in one place
+**Cause:** `BcryptCost = 12` (TRD §5.1) was defined and then applied only to the dummy hash on the
+user-not-found login path. Every real password — signup, invite acceptance, the placeholder for an
+invited account — used `bcrypt.DefaultCost` (10).
+**Course:** the timing defence was inverted. "No such account" cost roughly four times a real
+comparison, so the difference an attacker measures got *larger*: a louder enumeration oracle than
+having no dummy hash at all.
+**Solution:** one exported constant, used at every hashing site, with a comment saying why it must
+be.
+**Prevention:** a security constant is only as good as its least-careful call site. When one is
+introduced, `grep` for every other call of the same function in the same commit — a constant that
+exists but is not used everywhere is worse than no constant, because it reads as done.
+
+### 2026-09-02 — Shipped a lockout that counted but never locked
+**Cause:** `RecordFailedLogin` incremented `failed_login_count` and never set `locked_until`. The
+service had the `ErrAccountLocked` branch, the handler had the 423, the frontend had the
+"temporarily locked" message — and none of them could ever run.
+**Course:** `NFR-12` was unmet while three layers of code claimed it was met. Online password
+guessing was unbounded.
+**Prevention:** an error branch nothing can reach is dead code that reads as a feature. When adding
+a state, find the write that produces it before writing the read that consumes it — and test the
+state's *cause*, not just its handling.
+
+### 2026-09-02 — A full-row UPDATE behind a PATCH endpoint
+**Cause:** `UpdateDonorProfile` set all 12 columns from the request. The donor settings form sends
+neither `national_id` nor either emergency contact.
+**Course:** saving a phone number wrote NULL over the person to call in an emergency. Silent — no
+error, and nothing on screen said a field had been cleared.
+**Solution:** `COALESCE(sqlc.narg('col'), col)` per column, so "absent" and "cleared" are different
+things; the domain check runs against the resulting record, not the submitted fragment.
+**Prevention:** if the verb is PATCH, the SQL must be partial. A full-row UPDATE is only correct
+when the caller is guaranteed to send the full row — and a form that renders a subset of the columns
+never is.
+
+### 2026-09-02 — Two code paths guessed at the same undefined permission
+**Cause:** §7.6 grants staff `ctr` scope on `donor_profiles`, but that table has no centre column —
+deliberately, since a donor may attend any centre. The scope was unimplementable, so `list` and
+`resolveOwned` each invented an answer: the whole registry, and nothing at all.
+**Course:** staff could see every donor in a list and could not open any of them. Neither behaviour
+was intended by anyone.
+**Solution:** one function that states what `ctr` means for this resource, citing TRD §6.5, used by
+both paths, default-deny for any scope not named.
+**Prevention:** when a rule does not fit a resource, the answer is to decide and write it down in
+one place — not to let each call site fill the gap locally. Two call sites that disagree are proof
+the rule was never actually defined.
+
+### 2026-09-02 — A concurrency test that could not fail
+**Cause:** the admin-demotion race test fired **two** goroutines. The first transaction finished
+before the second began, so the race window was never entered.
+**Course:** the test passed with the row lock deleted. It asserted the right invariant — "at least
+one admin remains" — and still proved nothing, which is worse than no test, because the changelog
+then cites it as evidence.
+**Solution:** eight concurrent demotions instead of two. Without the lock that reliably leaves zero
+admins; with it, exactly seven succeed and the eighth is refused.
+**Prevention:** the existing rule — *break the guard and watch the test go red* — applies hardest to
+concurrency tests, where passing is the default outcome. Two threads is not a race; it is two
+threads. This is the second entry in this file about a test that could not fail (see the tamper
+test above), so it is now a step in the work, not an intention.
+
+### 2026-09-02 — Two defences, one assertion, neither pinned
+**Cause:** suspending an account revokes its open invitations *and* `AcceptInvite` refuses a
+non-pending account. One test asserted the outcome both produce.
+**Course:** deleting either defence left the suite green. Defence in depth became defence in name:
+the second layer could rot away unnoticed, and the first could be removed in a refactor with tests
+passing.
+**Solution:** assert each mechanism separately — that the invite row is closed in the database, and
+that an artificially re-opened invite is still refused.
+**Prevention:** overlapping guards need one assertion each. If a test passes with any single guard
+present, it measures the set, not the members — and the set is not what a future change will delete.

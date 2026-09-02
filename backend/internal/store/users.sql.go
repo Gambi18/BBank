@@ -206,6 +206,38 @@ func (q *Queries) GetUser(ctx context.Context, id int64) (GetUserRow, error) {
 	return i, err
 }
 
+const getUserByEmail = `-- name: GetUserByEmail :one
+SELECT id, email, role, status, center_id, hospital_id, last_login_at, created_at
+FROM users WHERE email = $1::citext
+`
+
+type GetUserByEmailRow struct {
+	ID          int64
+	Email       string
+	Role        UserRole
+	Status      UserStatus
+	CenterID    *int64
+	HospitalID  *int64
+	LastLoginAt pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
+}
+
+func (q *Queries) GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error) {
+	row := q.db.QueryRow(ctx, getUserByEmail, email)
+	var i GetUserByEmailRow
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.Role,
+		&i.Status,
+		&i.CenterID,
+		&i.HospitalID,
+		&i.LastLoginAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const listUsers = `-- name: ListUsers :many
 
 SELECT u.id, u.email, u.role, u.status, u.center_id, u.hospital_id,
@@ -275,6 +307,55 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]ListUse
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockAndCountAdmins = `-- name: LockAndCountAdmins :one
+SELECT count(*) FROM (
+    SELECT 1 FROM users WHERE role = 'admin' AND status = 'active' FOR UPDATE
+) AS locked
+`
+
+// The same count, but holding a row lock on every active admin.
+//
+// `ensureNotLastAdmin` counted outside any transaction, so two concurrent
+// demotions of the last two admins both saw 2 and both succeeded — leaving zero
+// admins, from which there is no recovery short of SQL. Locking the rows the
+// decision depends on serialises the two callers.
+func (q *Queries) LockAndCountAdmins(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, lockAndCountAdmins)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const resetInvitedUser = `-- name: ResetInvitedUser :exec
+UPDATE users
+   SET password_hash = $2, role = $3, status = 'pending_verification',
+       center_id = $4, hospital_id = $5,
+       deactivated_at = NULL
+WHERE id = $1 AND status = 'pending_verification'
+`
+
+type ResetInvitedUserParams struct {
+	ID           int64
+	PasswordHash string
+	Role         UserRole
+	CenterID     *int64
+	HospitalID   *int64
+}
+
+// Re-inviting is expected: the first link expires, or never arrives. The old
+// account row is reused rather than refused, so the user id, and anything
+// already pointing at it, survives.
+func (q *Queries) ResetInvitedUser(ctx context.Context, arg ResetInvitedUserParams) error {
+	_, err := q.db.Exec(ctx, resetInvitedUser,
+		arg.ID,
+		arg.PasswordHash,
+		arg.Role,
+		arg.CenterID,
+		arg.HospitalID,
+	)
+	return err
 }
 
 const revokeOpenInvitesForUser = `-- name: RevokeOpenInvitesForUser :exec

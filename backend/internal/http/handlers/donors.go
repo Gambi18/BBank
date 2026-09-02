@@ -158,11 +158,48 @@ func (h *DonorHandler) update(w http.ResponseWriter, r *http.Request) {
 // against a query parameter the caller supplied; here it comes from a verified
 // token and cannot be influenced by the request at all.
 func resolveOwned(w http.ResponseWriter, r *http.Request, requested int64) bool {
-	if middleware.Permits(r.Context(), middleware.Row{OwnerID: requested}) {
+	if donorScopePermits(r, requested) {
 		return true
 	}
 	response.NotFound(w, r)
 	return false
+}
+
+// donorScopePermits answers what the granted scope means for a DONOR record.
+//
+// `donor_profiles` has no centre column, and deliberately so: a donor may
+// attend any centre, and pinning them to one would make the person who moves
+// house invisible to the desk they walk up to. That leaves §7.6's `ctr` grant
+// for staff with nothing to compare against — `Permits` needs a `row.CenterID`
+// and there is none — so this resource has to say what `ctr` means, explicitly,
+// in one place.
+//
+// It means **the whole registry**, per TRD §6.5, which grants staff
+// `GET /api/v1/donors` as registry search with `center_id` as an optional
+// FILTER rather than a boundary. Check-in (`WI-39`) needs the same: a donor
+// walking in may never have attended this centre before.
+//
+// This was previously guessed twice, differently: `list` fell through to the
+// entire registry while `resolveOwned` asked `Permits` for a row with a nil
+// centre — which `ScopeCenter` always rejects — so staff could see every donor
+// at once and none of them individually. The disagreement is the bug; the
+// direction is TRD §6.5's.
+func donorScopePermits(r *http.Request, requested int64) bool {
+	switch middleware.ScopeFrom(r.Context()) {
+	case domain.ScopeAll:
+		return true
+	case domain.ScopeCenter:
+		// See above: registry-wide for donors, because there is no centre to
+		// scope to. Revisit if WI-24 ever gives donors a home centre.
+		return true
+	case domain.ScopeOwn:
+		id, ok := middleware.IdentityFrom(r.Context())
+		return ok && id.UserID == requested
+	default:
+		// Aggregate, hospital, or a scope added later: deny until somebody
+		// decides what it should mean here.
+		return false
+	}
 }
 
 func (h *DonorHandler) list(w http.ResponseWriter, r *http.Request) {
@@ -180,8 +217,13 @@ func (h *DonorHandler) list(w http.ResponseWriter, r *http.Request) {
 		p.Search = &s
 	}
 
-	// A donor's "own" scope makes a full listing meaningless; narrow it to self.
-	if middleware.ScopeFrom(r.Context()) == domain.ScopeOwn {
+	// The same scope decision as donorScopePermits, applied to a list rather
+	// than to one row. Anything that cannot see the whole registry sees only
+	// itself, and an unrecognised scope sees nothing.
+	switch middleware.ScopeFrom(r.Context()) {
+	case domain.ScopeAll, domain.ScopeCenter:
+		// Registry search. `?center_id=` is a filter, not a boundary (§6.5).
+	case domain.ScopeOwn:
 		if id, ok := middleware.IdentityFrom(r.Context()); ok {
 			row, err := h.svc.Get(r.Context(), id.UserID)
 			if errors.Is(err, service.ErrNotFound) {
@@ -201,6 +243,17 @@ func (h *DonorHandler) list(w http.ResponseWriter, r *http.Request) {
 			}}, 1, paging.Limit, paging.Offset)
 			return
 		}
+		// Own scope with no identity should be unreachable — RequirePermission
+		// rejects anonymous callers first — but falling through from here would
+		// hand back the whole registry, so it returns empty instead.
+		response.Paged(w, []dto.DonorSummary{}, 0, paging.Limit, paging.Offset)
+		return
+	default:
+		// Aggregate, hospital, or a scope added later: nothing, until somebody
+		// decides what it should mean. Default-deny, so a new scope cannot
+		// inherit registry-wide access by omission.
+		response.Paged(w, []dto.DonorSummary{}, 0, paging.Limit, paging.Offset)
+		return
 	}
 
 	rows, total, err := h.svc.List(r.Context(), p)

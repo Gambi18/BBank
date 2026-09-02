@@ -14,8 +14,22 @@ FROM users WHERE id = $1;
 UPDATE users SET last_login_at = now(), failed_login_count = 0, locked_until = NULL
 WHERE id = $1;
 
+-- Counts the failure AND locks the account once the threshold is reached.
+--
+-- Setting only the counter left `locked_until` NULL forever, so the
+-- ErrAccountLocked branch, the 423 status and the frontend's "temporarily
+-- locked" message were all unreachable and online guessing was unbounded. The
+-- lock is a short cool-off, not a ban: an attacker is slowed to a crawl, while
+-- a legitimate user who mistyped several times waits minutes rather than
+-- needing an administrator.
 -- name: RecordFailedLogin :exec
-UPDATE users SET failed_login_count = failed_login_count + 1
+UPDATE users
+   SET failed_login_count = failed_login_count + 1,
+       locked_until = CASE
+           WHEN failed_login_count + 1 >= sqlc.arg('threshold')::int
+           THEN now() + sqlc.arg('lockout')::interval
+           ELSE locked_until
+       END
 WHERE email = sqlc.arg('email')::citext;
 
 -- name: BumpTokenVersion :exec

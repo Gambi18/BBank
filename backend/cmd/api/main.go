@@ -103,6 +103,11 @@ func main() {
 	sweepCtx, stopSweep := context.WithCancel(context.Background())
 	defer stopSweep()
 	go runNoShowSweep(sweepCtx, logger, pool)
+	// The other two sweeps the schema documents but nothing was running:
+	// idempotency_keys has a 24h TTL (§6.4) and sessions expire, and both tables
+	// otherwise grow without bound — idempotency_keys while retaining stored
+	// response bodies.
+	go runRetentionSweeps(sweepCtx, logger, pool)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -222,6 +227,51 @@ func runNoShowSweep(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool
 
 	sweep() // once at boot, so a restart after downtime catches up immediately
 	ticker := time.NewTicker(noShowSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sweep()
+		}
+	}
+}
+
+// retentionSweepInterval paces the housekeeping sweeps. Hourly, for the same
+// reason as the no-show sweep: the work is a bounded indexed DELETE, and running
+// it often keeps each pass small.
+const retentionSweepInterval = time.Hour
+
+// runRetentionSweeps deletes expired idempotency keys and sessions.
+//
+// Both were documented and neither was scheduled: §6.4 says idempotency keys
+// have a 24-hour TTL "swept nightly", and `DeleteExpiredSessions` existed with
+// no caller. Left alone, `idempotency_keys` grows without bound *and* keeps the
+// stored response bodies past the window in which they mean anything.
+func runRetentionSweeps(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool) {
+	q := store.New(pool)
+	idem := service.NewIdempotencyService(q)
+
+	sweep := func() {
+		runCtx, cancel := context.WithTimeout(ctx, time.Minute)
+		defer cancel()
+
+		if n, err := idem.Sweep(runCtx); err != nil {
+			logger.Error("idempotency sweep failed", "error", err)
+		} else if n > 0 {
+			logger.Info("idempotency sweep", "deleted", n)
+		}
+
+		if n, err := q.DeleteExpiredSessions(runCtx); err != nil {
+			logger.Error("session sweep failed", "error", err)
+		} else if n > 0 {
+			logger.Info("session sweep", "deleted", n)
+		}
+	}
+
+	sweep()
+	ticker := time.NewTicker(retentionSweepInterval)
 	defer ticker.Stop()
 	for {
 		select {

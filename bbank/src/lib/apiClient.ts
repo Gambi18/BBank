@@ -56,8 +56,16 @@ async function request<T>(path: string, opts: Options = {}): Promise<{ data: T; 
 
     const headers: Record<string, string> = { Accept: 'application/json' }
     if (body !== undefined) headers['Content-Type'] = 'application/json'
-    if (method !== 'GET' && method !== 'DELETE') {
-        headers['Idempotency-Key'] = idempotencyKey ?? crypto.randomUUID()
+    // Only when the CALLER supplies one.
+    //
+    // This used to fall back to `crypto.randomUUID()` per request, which cannot
+    // deduplicate anything: a double-submitted form produced two different keys
+    // and two rows, while filling the replay table with entries nothing would
+    // ever match. The key has to identify the user's INTENT, so it must be
+    // minted where the intent is — when the form is rendered — which is what
+    // migration 000016 says and what WI-77 will wire through.
+    if (idempotencyKey && method !== 'GET' && method !== 'DELETE') {
+        headers['Idempotency-Key'] = idempotencyKey
     }
     if (!anonymous) {
         const token = (await cookies()).get(ACCESS_COOKIE)?.value

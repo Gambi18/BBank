@@ -130,7 +130,7 @@ func (s *UserService) Invite(ctx context.Context, p InviteParams) (userID int64,
 	if err != nil {
 		return 0, "", err
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(unusable), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(unusable), BcryptCost)
 	if err != nil {
 		return 0, "", fmt.Errorf("hash placeholder: %w", err)
 	}
@@ -148,24 +148,62 @@ func (s *UserService) Invite(ctx context.Context, p InviteParams) (userID int64,
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op once committed
 	q := s.q.WithTx(tx)
 
-	user, err := q.CreateInvitedUser(ctx, store.CreateInvitedUserParams{
-		Email: email, PasswordHash: string(hash), Role: store.UserRole(role),
-		CenterID: p.CenterID, HospitalID: p.HospitalID,
-	})
-	if err != nil {
-		if isUniqueViolation(err) {
-			return 0, "", fmt.Errorf("%w: that email already has an account", ErrConflict)
+	// Look first, because a failed INSERT aborts the whole transaction in
+	// Postgres — there is no recovering from the unique violation inside it.
+	// The lookup is not a substitute for the constraint: if two invitations to
+	// the same new address race, one still loses on the index below and is told
+	// so. Checking first only decides whether this is a RE-invite.
+	existing, lookupErr := q.GetUserByEmail(ctx, email)
+	switch {
+	case lookupErr == nil && existing.Status == store.UserStatusPendingVerification:
+		// Re-inviting is expected: the first link expires, or never arrives.
+		// The account row is reused, so its id — and anything already pointing
+		// at it — survives.
+		if err := q.ResetInvitedUser(ctx, store.ResetInvitedUserParams{
+			ID: existing.ID, PasswordHash: string(hash), Role: store.UserRole(role),
+			CenterID: p.CenterID, HospitalID: p.HospitalID,
+		}); err != nil {
+			if isCheckViolation(err) {
+				return 0, "", fmt.Errorf("%w: that role and centre combination is not allowed", ErrInvalid)
+			}
+			return 0, "", fmt.Errorf("reset invited user: %w", err)
 		}
-		if isCheckViolation(err) {
-			// Almost always users_center_matches_role — an assignment the schema
-			// forbids, e.g. staff with no centre.
-			return 0, "", fmt.Errorf("%w: that role and centre combination is not allowed", ErrInvalid)
+		// The previous link stops working the moment a new one is issued: two
+		// live invitations to one account is two ways in.
+		if err := q.RevokeOpenInvitesForUser(ctx, existing.ID); err != nil {
+			return 0, "", fmt.Errorf("revoke previous invites: %w", err)
 		}
-		return 0, "", fmt.Errorf("create invited user: %w", err)
+		userID = existing.ID
+
+	case lookupErr == nil:
+		// An account somebody is actually using. Re-inviting is not a way to
+		// reset a live account's password.
+		return 0, "", fmt.Errorf("%w: that email already has an account", ErrConflict)
+
+	case errors.Is(lookupErr, pgx.ErrNoRows):
+		user, err := q.CreateInvitedUser(ctx, store.CreateInvitedUserParams{
+			Email: email, PasswordHash: string(hash), Role: store.UserRole(role),
+			CenterID: p.CenterID, HospitalID: p.HospitalID,
+		})
+		if err != nil {
+			if isUniqueViolation(err) {
+				return 0, "", fmt.Errorf("%w: that email already has an account", ErrConflict)
+			}
+			if isCheckViolation(err) {
+				// Almost always users_center_matches_role — an assignment the
+				// schema forbids, e.g. staff with no centre.
+				return 0, "", fmt.Errorf("%w: that role and centre combination is not allowed", ErrInvalid)
+			}
+			return 0, "", fmt.Errorf("create invited user: %w", err)
+		}
+		userID = user.ID
+
+	default:
+		return 0, "", fmt.Errorf("look up existing user: %w", lookupErr)
 	}
 
 	if _, err := q.CreateInvite(ctx, store.CreateInviteParams{
-		UserID: user.ID, TokenHash: sum[:], InvitedBy: p.InvitedBy,
+		UserID: userID, TokenHash: sum[:], InvitedBy: p.InvitedBy,
 		ExpiresAt: pgTime(time.Now().Add(InviteTTL)),
 	}); err != nil {
 		return 0, "", fmt.Errorf("create invite: %w", err)
@@ -174,7 +212,7 @@ func (s *UserService) Invite(ctx context.Context, p InviteParams) (userID int64,
 	if err := tx.Commit(ctx); err != nil {
 		return 0, "", fmt.Errorf("commit: %w", err)
 	}
-	return user.ID, token, nil
+	return userID, token, nil
 }
 
 // AcceptInvite exchanges a token for a working account.
@@ -205,8 +243,16 @@ func (s *UserService) AcceptInvite(ctx context.Context, token, password string) 
 	if inv.ExpiresAt.Time.Before(time.Now()) {
 		return ErrInviteInvalid
 	}
+	// The account may have been suspended or deactivated between the invitation
+	// being sent and the link being clicked. Without this, accepting would set
+	// status='active' and hand the invitee a live account an admin had already
+	// decided against — and it is one error with the others on purpose, so the
+	// link cannot be used to learn an account's state.
+	if inv.Status != store.UserStatusPendingVerification {
+		return ErrInviteInvalid
+	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), BcryptCost)
 	if err != nil {
 		return fmt.Errorf("hash password: %w", err)
 	}
@@ -243,14 +289,27 @@ func (s *UserService) SetStatus(ctx context.Context, id int64, status string, ac
 	if err != nil {
 		return err
 	}
+
+	// The count and the write share a transaction, and the count holds a lock on
+	// every active admin. Counting outside one let two concurrent demotions of
+	// the last two admins both see 2 and both succeed.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op once committed
+	q := s.q.WithTx(tx)
+
 	if current.Role == store.UserRoleAdmin && *st != store.UserStatusActive {
-		if err := s.ensureNotLastAdmin(ctx); err != nil {
+		if err := ensureNotLastAdminTx(ctx, q); err != nil {
 			return err
 		}
 	}
-
-	if err := s.q.SetUserStatus(ctx, store.SetUserStatusParams{ID: id, Status: *st}); err != nil {
+	if err := q.SetUserStatus(ctx, store.SetUserStatusParams{ID: id, Status: *st}); err != nil {
 		return fmt.Errorf("set status: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
 	}
 
 	if *st != store.UserStatusActive {
@@ -259,6 +318,12 @@ func (s *UserService) SetStatus(ctx context.Context, id int64, status string, ac
 		// account is the WI-19 logout defect in another costume.
 		if err := s.auth.RevokeAllForUser(ctx, id, "status_"+string(*st)); err != nil {
 			return fmt.Errorf("revoke sessions: %w", err)
+		}
+		// And so does any unused invitation. A live session and a live invite
+		// are the same thing wearing different clothes — both are a way in that
+		// survives the decision to close the account.
+		if err := s.q.RevokeOpenInvitesForUser(ctx, id); err != nil {
+			return fmt.Errorf("revoke invites: %w", err)
 		}
 	}
 	return nil
@@ -286,13 +351,19 @@ func (s *UserService) SetRole(ctx context.Context, id int64, role string, center
 	if id == actorID && r != domain.RoleAdmin {
 		return fmt.Errorf("%w: you cannot remove your own admin role", ErrConflict)
 	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op once committed
+	q := s.q.WithTx(tx)
+
 	if current.Role == store.UserRoleAdmin && r != domain.RoleAdmin {
-		if err := s.ensureNotLastAdmin(ctx); err != nil {
+		if err := ensureNotLastAdminTx(ctx, q); err != nil {
 			return err
 		}
 	}
-
-	if err := s.q.SetUserRole(ctx, store.SetUserRoleParams{
+	if err := q.SetUserRole(ctx, store.SetUserRoleParams{
 		ID: id, Role: store.UserRole(r), CenterID: centerID, HospitalID: hospitalID,
 	}); err != nil {
 		if isCheckViolation(err) {
@@ -300,13 +371,20 @@ func (s *UserService) SetRole(ctx context.Context, id int64, role string, center
 		}
 		return fmt.Errorf("set role: %w", err)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
 	return s.auth.RevokeAllForUser(ctx, id, "role_change")
 }
 
-// ensureNotLastAdmin refuses the operation that would leave nobody able to
+// ensureNotLastAdminTx refuses the operation that would leave nobody able to
 // perform it. There is no recovery path from zero admins short of SQL.
-func (s *UserService) ensureNotLastAdmin(ctx context.Context) error {
-	n, err := s.q.CountAdmins(ctx)
+//
+// It takes the CALLER's transaction and locks every active admin row, so the
+// count and the write that depends on it cannot be separated by another
+// caller's commit.
+func ensureNotLastAdminTx(ctx context.Context, q *store.Queries) error {
+	n, err := q.LockAndCountAdmins(ctx)
 	if err != nil {
 		return fmt.Errorf("count admins: %w", err)
 	}

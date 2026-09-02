@@ -25,6 +25,31 @@ FROM users WHERE id = $1;
 -- name: CountAdmins :one
 SELECT count(*) FROM users WHERE role = 'admin' AND status = 'active';
 
+-- The same count, but holding a row lock on every active admin.
+--
+-- `ensureNotLastAdmin` counted outside any transaction, so two concurrent
+-- demotions of the last two admins both saw 2 and both succeeded — leaving zero
+-- admins, from which there is no recovery short of SQL. Locking the rows the
+-- decision depends on serialises the two callers.
+-- name: LockAndCountAdmins :one
+SELECT count(*) FROM (
+    SELECT 1 FROM users WHERE role = 'admin' AND status = 'active' FOR UPDATE
+) AS locked;
+
+-- Re-inviting is expected: the first link expires, or never arrives. The old
+-- account row is reused rather than refused, so the user id, and anything
+-- already pointing at it, survives.
+-- name: ResetInvitedUser :exec
+UPDATE users
+   SET password_hash = $2, role = $3, status = 'pending_verification',
+       center_id = sqlc.narg('center_id'), hospital_id = sqlc.narg('hospital_id'),
+       deactivated_at = NULL
+WHERE id = $1 AND status = 'pending_verification';
+
+-- name: GetUserByEmail :one
+SELECT id, email, role, status, center_id, hospital_id, last_login_at, created_at
+FROM users WHERE email = sqlc.arg('email')::citext;
+
 -- Creates the account an invite belongs to. The password hash is a discarded
 -- random secret: the column CHECK requires bcrypt/argon2 shape, so it cannot be
 -- a placeholder string, and it must not be anything guessable.

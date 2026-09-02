@@ -3,6 +3,8 @@ package service_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 
 	"bbank/internal/platform"
@@ -413,5 +415,180 @@ func TestGetUserNotFound(t *testing.T) {
 	users, _, _ := userSetup(t)
 	if _, err := users.Get(context.Background(), 999999); !errors.Is(err, service.ErrNotFound) {
 		t.Errorf("get missing user = %v, want ErrNotFound", err)
+	}
+}
+
+// H2: suspending an account must kill its outstanding invitation.
+//
+// Otherwise: an admin invites someone, thinks better of it and suspends them
+// before they join, and the invitee later clicks the link and activates a live
+// account — because AcceptInvite set status='active' unconditionally and
+// nothing ever closed the invite.
+func TestSuspendingRevokesAnOutstandingInvitation(t *testing.T) {
+	users, auth, pool := userSetup(t)
+	ctx := context.Background()
+	center := testsupport.CenterID(t, pool)
+	admin := testsupport.NewAdmin(t, pool, "revoker@example.test")
+
+	id, token, err := users.Invite(ctx, service.InviteParams{
+		Email: "regret@example.test", Role: "staff", CenterID: &center,
+	})
+	if err != nil {
+		t.Fatalf("invite: %v", err)
+	}
+
+	// The admin changes their mind before the invitee joins.
+	if err := users.SetStatus(ctx, id, "suspended", admin); err != nil {
+		t.Fatalf("suspend: %v", err)
+	}
+
+	if err := users.AcceptInvite(ctx, token, "sneaky-password"); !errors.Is(err, service.ErrInviteInvalid) {
+		t.Fatalf("accepting a suspended user's invitation = %v, want ErrInviteInvalid", err)
+	}
+
+	// Two independent defences close this, and the assertion above is satisfied
+	// by EITHER — so each is pinned separately here. Without this, deleting one
+	// of them leaves the test green and the remaining defence unguarded.
+	//
+	// Defence 1: suspending closes the outstanding invitation itself.
+	open := testsupport.CountRows(t, pool,
+		`SELECT count(*) FROM user_invites WHERE user_id = $1 AND accepted_at IS NULL`, id)
+	if open != 0 {
+		t.Errorf("%d invitation(s) still open after the account was suspended — "+
+			"a live invite is a way in that survives the decision to close the account", open)
+	}
+
+	// Defence 2: even an invitation that is somehow still open is refused,
+	// because the account is no longer pending. Re-open the row to isolate it.
+	if _, err := pool.Exec(ctx,
+		`UPDATE user_invites SET accepted_at = NULL WHERE user_id = $1`, id); err != nil {
+		t.Fatalf("re-open the invite: %v", err)
+	}
+	if err := users.AcceptInvite(ctx, token, "sneaky-password"); !errors.Is(err, service.ErrInviteInvalid) {
+		t.Errorf("an open invitation to a SUSPENDED account was accepted (%v) — "+
+			"AcceptInvite must check the account's status, not only the token", err)
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status::text FROM users WHERE id = $1`, id).Scan(&status); err != nil {
+		t.Fatalf("read status: %v", err)
+	}
+	if status != "suspended" {
+		t.Fatalf("the account is %q after a refused acceptance, want suspended", status)
+	}
+	if _, err := auth.Login(ctx, service.LoginInput{Email: "regret@example.test", Password: "sneaky-password"}); err == nil {
+		t.Fatal("a suspended invitee logged in")
+	}
+}
+
+// L1: re-inviting is expected — the first link expires, or never arrives — so
+// an address whose account is still pending is refreshed, not refused.
+func TestReInvitingAPendingAccountIssuesAFreshToken(t *testing.T) {
+	users, auth, pool := userSetup(t)
+	ctx := context.Background()
+	center := testsupport.CenterID(t, pool)
+
+	id1, first, err := users.Invite(ctx, service.InviteParams{
+		Email: "reinvite@example.test", Role: "staff", CenterID: &center,
+	})
+	if err != nil {
+		t.Fatalf("first invite: %v", err)
+	}
+	id2, second, err := users.Invite(ctx, service.InviteParams{
+		Email: "reinvite@example.test", Role: "staff", CenterID: &center,
+	})
+	if err != nil {
+		t.Fatalf("re-invite was refused: %v", err)
+	}
+	if id1 != id2 {
+		t.Errorf("re-inviting created a second account (%d then %d)", id1, id2)
+	}
+	if first == second {
+		t.Fatal("the same token was issued twice")
+	}
+
+	// Two live invitations to one account is two ways in: the first must die.
+	if err := users.AcceptInvite(ctx, first, "using-the-old-link"); !errors.Is(err, service.ErrInviteInvalid) {
+		t.Fatalf("the superseded link still works: %v", err)
+	}
+	if err := users.AcceptInvite(ctx, second, "using-the-new-link"); err != nil {
+		t.Fatalf("the fresh link does not work: %v", err)
+	}
+	if _, err := auth.Login(ctx, service.LoginInput{Email: "reinvite@example.test", Password: "using-the-new-link"}); err != nil {
+		t.Fatalf("the re-invited account cannot log in: %v", err)
+	}
+
+	// An account somebody is actually using is a different matter.
+	if _, _, err := users.Invite(ctx, service.InviteParams{
+		Email: "reinvite@example.test", Role: "staff", CenterID: &center,
+	}); !errors.Is(err, service.ErrConflict) {
+		t.Errorf("inviting an ACTIVE account = %v, want ErrConflict", err)
+	}
+}
+
+// L7: concurrent demotions must not empty the admin role.
+//
+// `ensureNotLastAdmin` counted OUTSIDE any transaction, so every caller that
+// read the count before any of them committed saw a safe number and proceeded.
+// The count and the write now share a transaction, and the count holds a row
+// lock on every active admin, so the callers serialise and each one sees the
+// effect of the one before it.
+//
+// **Eight admins rather than two, deliberately.** With two, the first
+// transaction reliably finishes before the second begins, the race window is
+// never entered, and the test passes with the row lock REMOVED — which makes it
+// no test at all. That was this test's first form, and it was verified vacuous
+// by deleting the lock and watching it stay green. Eight concurrent demotions
+// hold the window open long enough that an unlocked count empties the role.
+func TestConcurrentDemotionsCannotEmptyTheAdminRole(t *testing.T) {
+	users, _, pool := userSetup(t)
+	ctx := context.Background()
+
+	const admins = 8
+	ids := make([]int64, admins)
+	for i := range ids {
+		ids[i] = testsupport.NewAdmin(t, pool, fmt.Sprintf("raceadmin%d@example.test", i))
+	}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	ok, conflicts, other := 0, 0, 0
+	start := make(chan struct{})
+
+	// Each demotes its neighbour: every target is distinct, and no goroutine is
+	// refused by the self-demotion guard instead of by the one under test.
+	for i := range ids {
+		target, actor := ids[i], ids[(i+1)%admins]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			err := users.SetRole(ctx, target, "donor", nil, nil, actor)
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				ok++
+			case errors.Is(err, service.ErrConflict):
+				conflicts++
+			default:
+				other++
+				t.Errorf("demotion failed with an unexpected error: %v", err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	left := testsupport.CountRows(t, pool,
+		`SELECT count(*) FROM users WHERE role = 'admin' AND status = 'active'`)
+	if left < 1 {
+		t.Fatalf("%d concurrent demotions (%d succeeded, %d refused) left NO admin — "+
+			"there is no recovery from zero admins short of SQL", admins, ok, conflicts)
+	}
+	// Exactly one survivor. The guard must refuse the demotion that would empty
+	// the role and no other: serialised callers each see one fewer admin, so
+	// seven succeed and the eighth is refused.
+	if other == 0 && (left != 1 || conflicts != 1) {
+		t.Errorf("admins left = %d with %d refused, want 1 and 1 — the guard refused a demotion that was safe", left, conflicts)
 	}
 }

@@ -133,6 +133,15 @@ func (d Donor) Validate() error {
 		default:
 			return fmt.Errorf("%w: got %q", ErrInvalidBloodGroup, d.BloodGroup)
 		}
+		// Rhesus was checked for *presence* but never for value, so a caller
+		// sending {"blood_group":"A","rhesus":"x"} reached Postgres as an
+		// invalid enum input and came back a 500. Both halves of a blood type
+		// are validated here, where the answer is a 422 naming the field.
+		switch d.Rhesus {
+		case RhPositive, RhNegative:
+		default:
+			return fmt.Errorf("%w: got %q", ErrInvalidRhesus, d.Rhesus)
+		}
 	}
 	return nil
 }

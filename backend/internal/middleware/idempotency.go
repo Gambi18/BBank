@@ -39,7 +39,36 @@ const MaxIdempotentBody = 1 << 20 // 1 MiB
 // The failure being prevented is not hypothetical: a phlebotomist on a laggy
 // tablet double-taps "Record collection" and the system mints two donations,
 // two bags and two barcodes for one venepuncture.
-func Idempotency(store IdempotencyStore, required bool) func(http.Handler) http.Handler {
+// Idempotency options.
+type IdempotencyOption func(*idempotencyConfig)
+
+type idempotencyConfig struct {
+	required    bool
+	noStoreBody bool
+}
+
+// WithoutResponseBody records the key and the status but NOT the body.
+//
+// For endpoints whose successful response carries a credential — the invitation
+// token is the one today. Storing it would put a one-time secret in a table
+// that outlives the request, which is precisely what hashing it everywhere else
+// was meant to avoid. A retry then replays the status with an empty body, which
+// is the right trade: an idempotent retry of "create an invitation" must not
+// hand out the secret a second time either.
+func WithoutResponseBody() IdempotencyOption {
+	return func(c *idempotencyConfig) { c.noStoreBody = true }
+}
+
+func Idempotency(store IdempotencyStore, required bool, opts ...IdempotencyOption) func(http.Handler) http.Handler {
+	cfg := idempotencyConfig{required: required}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	return idempotency(store, cfg)
+}
+
+func idempotency(store IdempotencyStore, cfg idempotencyConfig) func(http.Handler) http.Handler {
+	required := cfg.required
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Safe methods are idempotent by definition; a key on one is
@@ -140,7 +169,11 @@ func Idempotency(store IdempotencyStore, required bool) func(http.Handler) http.
 				return
 			}
 
-			if err := store.Complete(r.Context(), id.UserID, key, int32(status), rec2.buf.Bytes()); err != nil {
+			body2 := rec2.buf.Bytes()
+			if cfg.noStoreBody {
+				body2 = nil
+			}
+			if err := store.Complete(r.Context(), id.UserID, key, int32(status), body2); err != nil {
 				// The response already went to the client, so this cannot change
 				// the answer. Log it: the consequence is a retry that executes
 				// twice, which is worth being able to find afterwards.

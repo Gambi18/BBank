@@ -1,6 +1,8 @@
+import { cookies } from 'next/headers'
 import { FaUserPlus, FaUsers } from 'react-icons/fa6'
 import { listUsers, ROLES } from '@/lib/data/users'
 import { inviteUser, setUserStatus, setUserRole } from '@/lib/actions/users'
+import { INVITE_TOKEN_COOKIE } from '@/lib/routes'
 
 /**
  * The user console (`WI-18`, `FR-66`).
@@ -28,6 +30,13 @@ export default async function Users({
 }) {
     const filters = await searchParams
     const { items } = await listUsers(filters)
+
+    // A token just minted by inviteUser, handed over in a short-lived HttpOnly
+    // cookie rather than a query string — see INVITE_TOKEN_COOKIE. Read here and
+    // rendered once; there is no way to see it again, because only its hash is
+    // stored. (The cookie is not deleted from a render — Next.js forbids that —
+    // so it carries a 5-minute expiry instead.)
+    const freshToken = (await cookies()).get(INVITE_TOKEN_COOKIE)?.value
 
     async function invite(formData: FormData) {
         'use server'
@@ -63,6 +72,19 @@ export default async function Users({
                     A suspended account stops working on its next request, not at its next login.
                 </p>
             </header>
+
+            {freshToken && (
+                <section className='card p-6 mb-8 border-rose-200 bg-rose-50/40'>
+                    <h2 className="text-sm font-semibold text-zinc-900">Invitation link — shown once</h2>
+                    <p className="text-zinc-500 text-sm mt-1">
+                        Copy this and send it to the person you invited. It cannot be shown again,
+                        and it expires in 7 days.
+                    </p>
+                    <code className="mt-3 block break-all rounded-xl border border-rose-200 bg-white px-4 py-3 text-sm">
+                        /accept-invite?token={freshToken}
+                    </code>
+                </section>
+            )}
 
             <section className='card p-8 mb-8'>
                 <h2 className="text-lg font-semibold tracking-tight flex items-center gap-2">

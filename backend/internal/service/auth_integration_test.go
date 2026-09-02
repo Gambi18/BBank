@@ -214,3 +214,62 @@ func TestInactiveAccountCannotLogIn(t *testing.T) {
 		t.Fatal("a suspended account logged in")
 	}
 }
+
+// NFR-12: repeated failures must actually lock the account.
+//
+// `RecordFailedLogin` incremented the counter and never set `locked_until`, so
+// the ErrAccountLocked branch, the 423 status and the frontend's "temporarily
+// locked" message were all unreachable — online password guessing was unbounded.
+func TestRepeatedFailuresLockTheAccount(t *testing.T) {
+	svc, pool, userID := authSetup(t)
+	ctx := context.Background()
+
+	for i := 0; i < service.MaxFailedLogins; i++ {
+		if _, err := svc.Login(ctx, service.LoginInput{Email: "auth@example.test", Password: "wrong"}); err == nil {
+			t.Fatal("a wrong password was accepted")
+		}
+	}
+
+	var locked bool
+	if err := pool.QueryRow(ctx,
+		`SELECT locked_until IS NOT NULL AND locked_until > now() FROM users WHERE id = $1`, userID).Scan(&locked); err != nil {
+		t.Fatalf("read lock: %v", err)
+	}
+	if !locked {
+		t.Fatalf("after %d failures the account is not locked; guessing is unbounded", service.MaxFailedLogins)
+	}
+
+	// The CORRECT password is now refused too — that is the point of a lockout.
+	if _, err := svc.Login(ctx, service.LoginInput{Email: "auth@example.test", Password: testPassword}); !errors.Is(err, service.ErrAccountLocked) {
+		t.Fatalf("login while locked = %v, want ErrAccountLocked", err)
+	}
+
+	// A successful login after the window clears the counter and the lock, so a
+	// user who mistyped is not penalised forever.
+	if _, err := pool.Exec(ctx, `UPDATE users SET locked_until = now() - INTERVAL '1 minute' WHERE id = $1`, userID); err != nil {
+		t.Fatalf("expire the lock: %v", err)
+	}
+	if _, err := svc.Login(ctx, service.LoginInput{Email: "auth@example.test", Password: testPassword}); err != nil {
+		t.Fatalf("login after the lock expired: %v", err)
+	}
+	var count int32
+	if err := pool.QueryRow(ctx, `SELECT failed_login_count FROM users WHERE id = $1`, userID).Scan(&count); err != nil {
+		t.Fatalf("read counter: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("failed_login_count = %d after a successful login, want 0", count)
+	}
+}
+
+// A lockout must not become an enumeration oracle: an unknown address cannot be
+// locked, so it must not answer differently from a locked real one.
+func TestLockoutDoesNotRevealWhichAccountsExist(t *testing.T) {
+	svc, _, _ := authSetup(t)
+	ctx := context.Background()
+
+	for i := 0; i < service.MaxFailedLogins+2; i++ {
+		if _, err := svc.Login(ctx, service.LoginInput{Email: "ghost@example.test", Password: "wrong"}); !errors.Is(err, service.ErrInvalidCredentials) {
+			t.Fatalf("an unknown account answered %v; it must stay indistinguishable", err)
+		}
+	}
+}
