@@ -46,14 +46,34 @@ type DonationRequestService struct {
 	// books without checking, and "the gate was not wired up in that path" is
 	// how a safety requirement becomes a changelog entry.
 	elig *EligibilityService
+	// centers resolves the slot an approval books into, and refuses a centre
+	// that is closed (WI-24). A hard dependency for the same reason.
+	centers *CenterService
 }
 
-func NewDonationRequestService(pool *pgxpool.Pool, q *store.Queries, elig *EligibilityService) *DonationRequestService {
+func NewDonationRequestService(pool *pgxpool.Pool, q *store.Queries, elig *EligibilityService, centers *CenterService) *DonationRequestService {
 	if elig == nil {
 		panic("donation request service requires an eligibility service (FR-19)")
 	}
-	return &DonationRequestService{pool: pool, q: q, elig: elig}
+	if centers == nil {
+		panic("donation request service requires a centre service (FR-14)")
+	}
+	return &DonationRequestService{pool: pool, q: q, elig: elig, centers: centers}
 }
+
+// AppointmentSeatRetries bounds the retry loop that resolves a seat collision.
+//
+// Two approvals into the same slot can both compute the same lowest free seat;
+// the unique index lets exactly one commit and the other retries with the next
+// seat. Each retry re-reads what is taken, so the loop shortens every time — it
+// terminates because a slot has finitely many seats and a lost race means
+// somebody else took one.
+//
+// The bound is the largest capacity the schema allows (`donation_centers_capacity`
+// CHECK, 1-100) plus a little slack, so a full slot is reported as full rather
+// than as a retry budget running out. A loop bounded by anything smaller would
+// turn heavy contention into a spurious 409 on a slot that had room.
+const AppointmentSeatRetries = 110
 
 type ListRequestParams struct {
 	Scope  Scope
@@ -153,6 +173,31 @@ func (s *DonationRequestService) Create(ctx context.Context, p CreateRequestPara
 	// second handler that calls this method, and there will be more of them
 	// (WI-39 check-in, WI-44 collection). The service is the narrowest waist
 	// every booking passes through.
+	// FR-14: a closed centre takes no new bookings, and it has to be refused
+	// HERE as well as at approval.
+	//
+	// Approval already refused one, via SlotFor. That was not enough: a request
+	// is the donor-facing half of a booking, and letting one be raised against a
+	// centre that is shut means the donor is told "we will confirm a date soon"
+	// for a date that can never come, and staff inherit a queue of requests they
+	// can only reject. The trigger on `appointments` is the backstop; this is the
+	// answer a person can act on.
+	//
+	// Resolved through the centre service rather than by reading `is_active`
+	// here, so "which centre" and "is it open" are one question with one answer —
+	// the two-paths-guessing-differently failure this codebase keeps re-learning.
+	centerID := int64(0)
+	if p.CenterID != nil {
+		centerID = *p.CenterID
+	}
+	if centerID != 0 {
+		if _, active, err := s.centers.Scheduling(ctx, centerID); err != nil {
+			return zero, err
+		} else if !active {
+			return zero, fmt.Errorf("%w: %s", ErrConflict, ErrCenterInactive)
+		}
+	}
+
 	policies, err := s.elig.Policies(ctx)
 	if err != nil {
 		return zero, err
@@ -273,25 +318,48 @@ func (s *DonationRequestService) gate(
 
 // Approve sets status='approved' and creates the appointment in ONE transaction.
 //
-// This is the fix for A8/TD-05. The original `confirm` deleted the request row
-// after creating the appointment, which destroyed the link back to who asked and
-// when — see the quarantined rows in migration_rejects. The row now survives
-// with `status='approved'` and a `reviewed_by`/`reviewed_at` trail.
+// Retried as a whole on a seat collision, and it has to be the WHOLE thing: a
+// unique-violation aborts the transaction it happens in, so there is no
+// retrying the insert from inside. Each attempt re-reads which seats are taken,
+// so a lost race costs one round trip and the loop shortens every time.
 //
-// The row is locked with FOR UPDATE before its status is checked. Without the
-// lock, two staff approving simultaneously both read 'pending', both pass the
-// transition check, and the second insert dies on the UNIQUE constraint over
-// appointments.donation_request_id — a 500 for what is really a 409.
+// Rolling back also undoes the status transition, which is what makes retrying
+// safe: a failed attempt leaves the request `pending`, exactly as it found it.
 func (s *DonationRequestService) Approve(ctx context.Context, id int32, reviewerID int64, scheduled time.Time, permits func(ownerID, centerID int64) bool) (store.CreateAppointmentForRequestRow, error) {
 	var appt store.CreateAppointmentForRequestRow
 
-	// Resolved before the transaction opens. Reading policy can hit the
+	// Resolved before any transaction opens. Reading policy can hit the
 	// database, and asking for a second connection while holding a row lock is
-	// how concurrent approvals deadlock the pool — see EligibilityService.EvaluateWith.
+	// how concurrent approvals deadlock the pool — see
+	// EligibilityService.EvaluateWith.
 	policies, err := s.elig.Policies(ctx)
 	if err != nil {
 		return appt, err
 	}
+
+	for attempt := 0; attempt < AppointmentSeatRetries; attempt++ {
+		appt, err = s.approveOnce(ctx, id, reviewerID, scheduled, permits, policies)
+		if err == nil {
+			return appt, nil
+		}
+		if !isUniqueViolationOn(err, "appointments_one_per_slot_seat") {
+			return appt, err
+		}
+		// Somebody took the seat between our reading it free and our committing.
+		// That is the constraint doing its job; ask again.
+	}
+	return appt, fmt.Errorf("%w: that slot is full", ErrConflict)
+}
+
+func (s *DonationRequestService) approveOnce(
+	ctx context.Context,
+	id int32,
+	reviewerID int64,
+	scheduled time.Time,
+	permits func(ownerID, centerID int64) bool,
+	policies *domain.Policies,
+) (store.CreateAppointmentForRequestRow, error) {
+	var appt store.CreateAppointmentForRequestRow
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -319,6 +387,16 @@ func (s *DonationRequestService) Approve(ctx context.Context, id int32, reviewer
 		return appt, fmt.Errorf("%w: request is %s", ErrConflict, req.Status)
 	}
 
+	// WI-24: the instant this appointment occupies. `scheduled_at` IS the slot,
+	// so a requested time is snapped down to the centre's grid before anything
+	// is written — otherwise two appointments five minutes apart would be
+	// different slots and capacity would mean nothing. A closed centre is
+	// refused here (FR-14).
+	slot, err := s.centers.SlotForWith(ctx, q, req.CenterID, scheduled)
+	if err != nil {
+		return appt, err
+	}
+
 	// FR-19 again, and not redundantly.
 	//
 	// The gate at Create answered for the donor's PREFERRED date, using the facts
@@ -332,7 +410,7 @@ func (s *DonationRequestService) Approve(ctx context.Context, id int32, reviewer
 	// No override here, deliberately: overriding is a decision made when the
 	// booking is raised, by an admin, with a reason. An approval screen is not
 	// where a permanent deferral should be waved through.
-	if err := s.gate(ctx, q, policies, int64(req.DonorID), domain.Procedure(req.Procedure), scheduled, nil); err != nil {
+	if err := s.gate(ctx, q, policies, int64(req.DonorID), domain.Procedure(req.Procedure), slot, nil); err != nil {
 		return appt, err
 	}
 
@@ -345,17 +423,34 @@ func (s *DonationRequestService) Approve(ctx context.Context, id int32, reviewer
 		DonationRequestID: &reqID,
 		DonorID:           req.DonorID,
 		CenterID:          req.CenterID,
-		ScheduledDate:     pgtype.Date{Time: scheduled, Valid: true},
+		ScheduledAt:       pgTime(slot),
 		CreatedBy:         &reviewerID,
 	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The seat query found nothing free. Not an error in the query — the
+		// slot is full, which is a real answer a person can act on by choosing
+		// another time.
+		return appt, fmt.Errorf("%w: every seat in that slot is taken", ErrConflict)
+	}
 	if err != nil {
 		if isUniqueViolation(err) {
+			// Two different unique indexes can fire here. One-appointment-per-
+			// request is final; a seat collision is retryable, so it is returned
+			// as-is for Approve to recognise.
+			if isUniqueViolationOn(err, "appointments_one_per_slot_seat") {
+				return appt, err
+			}
 			return appt, fmt.Errorf("%w: an appointment already exists for this request", ErrConflict)
 		}
 		return appt, fmt.Errorf("create appointment: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
+		// A serialisation or unique failure can surface at COMMIT rather than at
+		// the statement, so the same recognition applies here.
+		if isUniqueViolationOn(err, "appointments_one_per_slot_seat") {
+			return appt, err
+		}
 		return appt, fmt.Errorf("commit: %w", err)
 	}
 	return appt, nil

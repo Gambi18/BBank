@@ -575,6 +575,8 @@ CREATE TABLE donation_centers (
     capacity_per_slot SMALLINT    NOT NULL DEFAULT 4,
     slot_minutes      SMALLINT    NOT NULL DEFAULT 30,
     opening_hours     JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    -- Shape defined by WI-24 (see below); `{}` means "not configured", which is
+    -- NOT the same as "closed all week".
     timezone          TEXT        NOT NULL DEFAULT 'Africa/Douala',
     is_active         BOOLEAN     NOT NULL DEFAULT TRUE,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -692,6 +694,32 @@ CREATE TABLE abo_compatibility (
     CONSTRAINT abo_compatibility_class CHECK (component_class IN ('red_cells','plasma','platelets'))
 );
 ```
+
+**`opening_hours` shape** (defined by `WI-24`; the column pre-dated any definition):
+
+```json
+{"mon": [["08:00", "12:00"], ["13:00", "16:30"]], "sat": [["08:00", "12:00"]]}
+```
+
+Keys are lowercase three-letter weekdays (`mon`…`sun`). The value is a **list** of
+`[open, close]` pairs in `HH:MM` local time, because a centre that closes for lunch is the
+ordinary case and a single open/close would either book donors into the break or shorten
+the day to avoid it. Intervals must not overlap; abutting ones are allowed.
+
+Three states, and they are all different:
+
+| Value | Meaning |
+|---|---|
+| `{}` | Nobody has configured hours. Bookings fall back to 09:00 local — the time migration `000005` hardcoded, so existing appointments are not silently moved. |
+| `{"mon": […]}` with no `"sun"` key | Open Monday, **closed Sunday**. Absence of a day means shut. |
+| `{"mon": []}` | Also closed Monday — an empty list is a configured absence. |
+
+The **slot grid is measured from the start of each interval**, not from midnight: a centre
+opening at 08:15 with 30-minute slots has slots at 08:15 and 08:45. A slot that would run
+past the interval's close is not offered. `scheduled_at` on an appointment IS the slot
+start, which is what makes the `(center_id, scheduled_at, slot_seat)` unique index in
+migration `000019` mean "one seat per slot".
+
 
 The `policies_no_overlap` exclusion constraint is worth calling out: it makes it
 *physically impossible* to have two simultaneously-effective values for the same policy key

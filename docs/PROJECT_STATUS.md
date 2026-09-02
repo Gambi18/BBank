@@ -111,7 +111,10 @@ schema doc; route paths by the user journey. Other documents cite, never redefin
 - [x] **`FR-19` deferral enforcement on booking**, server-side, with the eligible date (`WI-26`)
 - [x] Permanent-deferral override: admin only, reason required, logged (`WI-26`)
 - [ ] `FR-19` at check-in and collection (`WI-39`, `WI-44`)
-- [ ] Donation intervals for `apheresis_plasma` and `double_red_cell` (`WI-24`)
+- [x] Donation centres: CRUD, opening hours, per-slot capacity (`WI-24`)
+- [x] **Over-booking impossible under concurrent approvals** — a constraint, not a check (`WI-24`)
+- [x] Deactivating a centre stops new bookings and preserves history (`WI-24`)
+- [ ] Donation intervals for `apheresis_plasma` and `double_red_cell` — clinical values needed
 - [ ] Session/JWT issuance from the backend (currently the frontend owns the cookie)
 
 ### Cross-cutting
@@ -223,9 +226,11 @@ _Resolved since this list was written:_ open CORS (now an explicit allowlist wit
 
 ## Suggested Next Steps (sequenced)
 
-1. **`WI-24` — donation centres and slot capacity.** Now the closest thing to blocking: `WI-26`
-   refuses `apheresis_plasma` and `double_red_cell` because neither has a seeded donation interval,
-   and capacity-aware scheduling is what stops two approvals filling a one-seat slot.
+1. **A decision, not a work item: the two missing donation intervals.** `apheresis_plasma` and
+   `double_red_cell` are members of the `donation_procedure` enum with no `donation_interval_days.*`
+   policy row, so booking either is refused with a 422 naming the gap. Adding them is one `INSERT`
+   — but the values are clinical (commonly 14 and 112 days) and want a clinician's sign-off rather
+   than a plausible-looking guess in a migration.
 2. `WI-31` — admin donor edit/delete, password resets, and a confirmation dialog on destructive
    actions. `WI-18` shipped the operational minimum of `/admin/users`; this makes it complete.
 3. `WI-27` — the audit log. `WI-26`'s permanent-deferral override currently writes a structured log
@@ -239,11 +244,68 @@ _Resolved since this list was written:_ open CORS (now an explicit allowlist wit
 6. `WI-79` — email the invitation instead of handing the admin a link to copy.
 
 **Done since this list was last written:** `WI-23` (appointment cancel/reschedule/no-show sweep),
-`WI-30`'s HTTP layer, and `WI-25`/`WI-26` (the policy resolver and the `FR-19` booking gate).
+`WI-30`'s HTTP layer, `WI-25`/`WI-26` (the policy resolver and the `FR-19` booking gate), and `WI-24`
+(donation centres and slot capacity).
 
 ---
 
 ## Changelog
+- **2026-09-02** — **`WI-24`: donation centres, and slot capacity as a constraint rather than a
+  check.**
+
+  **Over-booking is now impossible, not merely checked.** `FR-14`'s acceptance criterion is "two
+  simultaneous approvals into a one-seat slot produce exactly one appointment", and a count-then-
+  insert cannot deliver it: both transactions count zero, both see room, both insert. Migration
+  `000019` gives a slot numbered **seats** — `appointments.slot_seat` plus a partial unique index on
+  `(center_id, scheduled_at, slot_seat)` — so the second committer gets a 23505 and the service
+  tries the next seat. A trigger keeps the seat inside the centre's capacity, so no caller,
+  including psql, can widen a slot by inventing seat 99. Together they bound a slot at exactly
+  `capacity_per_slot` with no lock held across the decision.
+  A counting trigger would have been the same check-then-insert one layer down — under READ
+  COMMITTED it cannot see another transaction's uncommitted row. Making the constraint a unique
+  index moves the decision to the one place Postgres already serialises.
+  The retry is at the **transaction** level, because a unique violation aborts the transaction it
+  happens in; rolling back also undoes the status transition, which is what makes retrying safe.
+
+  **`scheduled_at` is now the slot start.** Every appointment used to be created at a hardcoded
+  09:00, so "capacity per slot" would have meant four donors per centre per day, all at nine. A
+  requested time is snapped **down** to the centre's grid — measured from each opening interval's
+  start, not from midnight, because a centre opening at 08:15 has slots at 08:15 and 08:45 and a
+  midnight grid would offer 08:00, fifteen minutes before anybody is there. Down rather than to the
+  nearest, so a request for 09:29 books the 09:00 slot it was for. A time outside opening hours is
+  refused rather than relocated: silently moving a booking hides the mistake from whoever made it.
+
+  **`opening_hours` had a column and no definition.** It has one now, in `DATABASE_SCHEMA.md` §6.2:
+  a list of `[open, close]` pairs per weekday, because a lunch break is the ordinary case. Three
+  states that are all different — `{}` means nobody has configured hours and bookings fall back to
+  the historical 09:00; a missing day key means **closed**; an empty list also means closed. A
+  centre that has filled nothing in keeps working, because an unset column is an administrative gap
+  and not a decision to shut.
+
+  **Centre CRUD** at `/api/v1/centers`, with `GET` public per TRD §6.5 — the directory is no PHI,
+  and a donor deciding whether to sign up needs to know where they would go. `code` is not
+  editable: it is printed on labels and quoted in reports, and a centre needing a different code is
+  a different centre. Deactivating removes a centre from the public directory, refuses new requests
+  **and** new approvals, and leaves every existing appointment alone and finishable — closing a
+  centre must not strand the people already booked into it. Lowering capacity below what a slot
+  holds is allowed and cancels nobody: an administrator editing a number is not a scheduling
+  decision the system should make on their behalf.
+
+  **Two defects found while building it, both in code written earlier today.**
+  `DonationRequestService.Create` never checked the centre at all — only approval did — so a donor
+  could raise a request against a closed centre and be told "we will confirm a date soon" for a date
+  that could never come, while staff inherited a queue they could only reject.
+  And the test harness had the `policies` problem again in a second form: `donation_centers`
+  *survives* `TRUNCATE` but is *mutated* by tests, so one deactivation test made three unrelated
+  tests fail with "that centre is not currently taking bookings" — in a different file from the
+  cause. `Truncate` now restores both reference tables from a snapshot captured before the first
+  truncate; centres are repaired in place rather than reinserted, because `storage_locations`
+  references them `ON DELETE RESTRICT`.
+
+  Coverage: domain 96.5%, service 75.8%. Migration `000019` round-trips. Still open and deliberately
+  not guessed at: `apheresis_plasma` and `double_red_cell` have no seeded donation interval, so
+  booking either is refused with a 422 naming the gap — those are clinical constants, and inventing
+  two of them in passing is not a thing to do. The `/admin/centers` console is `WI-89`'s.
 - **2026-09-02** — **`WI-25` and `WI-26`: clinical policy becomes data, and `FR-19`'s deferral gate
   goes in. Plus the empty `policies` table nothing had noticed.**
 

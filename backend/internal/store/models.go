@@ -973,6 +973,7 @@ type Appointment struct {
 	CreatedBy          *int64
 	CreatedAt          pgtype.Timestamptz
 	UpdatedAt          pgtype.Timestamptz
+	SlotSeat           int16
 }
 
 type AuditLog struct {

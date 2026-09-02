@@ -52,23 +52,41 @@ func (q *Queries) CountAppointments(ctx context.Context, arg CountAppointmentsPa
 }
 
 const createAppointmentForRequest = `-- name: CreateAppointmentForRequest :one
-INSERT INTO appointments (donation_request_id, donor_id, center_id, scheduled_at, status, created_by)
-VALUES (
+WITH centre AS (
+    SELECT id, capacity_per_slot FROM donation_centers
+     WHERE id = $3 AND is_active
+),
+free AS (
+    SELECT gs.seat
+    FROM centre, generate_series(1, centre.capacity_per_slot) AS gs(seat)
+    WHERE NOT EXISTS (
+        SELECT 1 FROM appointments a
+         WHERE a.center_id    = centre.id
+           AND a.scheduled_at = $4::timestamptz
+           AND a.slot_seat    = gs.seat
+           AND a.status <> 'cancelled'
+    )
+    ORDER BY gs.seat
+    LIMIT 1
+)
+INSERT INTO appointments (donation_request_id, donor_id, center_id, scheduled_at, slot_seat, status, created_by)
+SELECT
     $1,
     $2,
     $3,
-    ($4::date + TIME '09:00') AT TIME ZONE 'Africa/Douala',
+    $4::timestamptz,
+    free.seat,
     'scheduled',
     $5
-)
-RETURNING id, donation_request_id, donor_id, center_id, scheduled_at, status
+FROM free
+RETURNING id, donation_request_id, donor_id, center_id, scheduled_at, slot_seat, status
 `
 
 type CreateAppointmentForRequestParams struct {
 	DonationRequestID *int32
 	DonorID           int32
 	CenterID          int64
-	ScheduledDate     pgtype.Date
+	ScheduledAt       pgtype.Timestamptz
 	CreatedBy         *int64
 }
 
@@ -78,18 +96,39 @@ type CreateAppointmentForRequestRow struct {
 	DonorID           int32
 	CenterID          int64
 	ScheduledAt       pgtype.Timestamptz
+	SlotSeat          int16
 	Status            AppointmentStatus
 }
 
 // Created only by approving a request, inside that request's transaction — never
 // on its own. An appointment with no originating request is the shape of data
 // the old `confirm` left behind when it deleted the row it came from.
+// Books the appointment into the LOWEST FREE SEAT of its slot (WI-24).
+//
+// The seat is chosen in the same statement that inserts it, and the partial
+// unique index `appointments_one_per_slot_seat` is what actually holds under
+// concurrency: two callers can both compute seat 2, and exactly one of them
+// commits it. The other gets 23505 and the service asks again, which is why
+// this query is safe to retry — see `AppointmentSeatRetries`.
+//
+// `generate_series(1, capacity) EXCEPT taken` rather than `count(*) + 1`,
+// because seats are freed by cancellation: with seats 1 and 3 live, the next
+// booking belongs in 2, and `count(*) + 1` would say 3 and collide.
+//
+// An empty result means the slot is full. That is a real answer, not an error —
+// `:one` turns it into pgx.ErrNoRows and the service maps it to a 409 naming the
+// slot.
+//
+// The centre's capacity, activity and timezone are read here rather than passed
+// in, so a caller cannot widen a slot by sending a bigger number. The trigger
+// rejects an out-of-range seat anyway; this keeps the honest path from ever
+// producing one.
 func (q *Queries) CreateAppointmentForRequest(ctx context.Context, arg CreateAppointmentForRequestParams) (CreateAppointmentForRequestRow, error) {
 	row := q.db.QueryRow(ctx, createAppointmentForRequest,
 		arg.DonationRequestID,
 		arg.DonorID,
 		arg.CenterID,
-		arg.ScheduledDate,
+		arg.ScheduledAt,
 		arg.CreatedBy,
 	)
 	var i CreateAppointmentForRequestRow
@@ -99,6 +138,7 @@ func (q *Queries) CreateAppointmentForRequest(ctx context.Context, arg CreateApp
 		&i.DonorID,
 		&i.CenterID,
 		&i.ScheduledAt,
+		&i.SlotSeat,
 		&i.Status,
 	)
 	return i, err

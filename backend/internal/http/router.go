@@ -103,8 +103,14 @@ func NewRouter(d Deps) http.Handler {
 	policySvc := service.NewPolicyService(q)
 	eligSvc := service.NewEligibilityService(q, policySvc)
 
+	// WI-24: donation centres. One service, shared — the booking path needs it
+	// to resolve a slot and to refuse a closed centre.
+	centerSvc := service.NewCenterService(q)
+	centers := handlers.NewCenterHandler(centerSvc, idem)
+	r.Mount("/api/v1/centers", centers.Routes())
+
 	r.Mount("/api/v1/donation-requests",
-		handlers.NewDonationRequestHandler(service.NewDonationRequestService(d.Pool, q, eligSvc), idem).Routes())
+		handlers.NewDonationRequestHandler(service.NewDonationRequestService(d.Pool, q, eligSvc, centerSvc), idem).Routes())
 	r.Mount("/api/v1/appointments",
 		handlers.NewAppointmentHandler(service.NewAppointmentService(d.Pool, q), idem).Routes())
 

@@ -19,7 +19,7 @@ func eligSetup(t *testing.T) (*service.EligibilityService, *service.DonationRequ
 	pool := testsupport.Pool(t)
 	q := store.New(pool)
 	elig := service.NewEligibilityService(q, service.NewPolicyService(q))
-	return elig, service.NewDonationRequestService(pool, q, elig), pool
+	return elig, service.NewDonationRequestService(pool, q, elig, service.NewCenterService(q)), pool
 }
 
 // newAdultDonor inserts a donor who passes every rule, so a test can break

@@ -82,8 +82,9 @@ func Pool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 
-	// Before the truncate, never after: the truncate is what empties `policies`.
-	capturePolicySeed(pool)
+	// Before the truncate, never after: the truncate is what empties `policies`,
+	// and the tests that follow are what disturb `donation_centers`.
+	captureReferenceData(pool)
 	Truncate(t, pool)
 	return pool
 }
@@ -185,19 +186,36 @@ func Truncate(t *testing.T, pool *pgxpool.Pool) {
 	if err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	restorePolicySeed(t, pool)
+	restoreReferenceData(t, pool)
 }
 
-// policySeed is the seeded `policies` rows, captured once from the freshly
-// migrated database before any test can truncate them.
+// The seeded reference rows, captured once from the freshly migrated database
+// before any test can disturb them.
 //
 // Captured rather than hardcoded: a copy of the values here would be a second
-// source of truth for clinical constants, drifting from migration 000012 in
-// exactly the way `TestSeededPolicyValuesMatchTheMigration` exists to prevent.
+// source of truth, drifting from the migrations in exactly the way
+// `TestSeededPolicyValuesMatchTheMigration` exists to prevent.
+//
+// Two tables need this, for two different reasons.
+//
+//   - `policies` is EMPTIED by the truncate below, because `policies.created_by`
+//     references `users` and `TRUNCATE ... CASCADE` propagates across foreign
+//     keys regardless of the `ON DELETE SET NULL` that column declares.
+//   - `donation_centers` survives the truncate, and is disturbed by tests
+//     instead: `WI-24` gave centres a capacity, opening hours and an active
+//     flag, and a test that closes a centre or narrows a slot leaves it that way
+//     for everything that runs afterwards. That already happened — a
+//     deactivation test made three unrelated tests fail with "that centre is not
+//     currently taking bookings", in a different file from the cause.
+//
+// Restoring both here rather than asking each test to remember is the only
+// version of this that stays true: the test that forgets is the one that breaks
+// somebody else.
 var (
-	policySeedOnce sync.Once
-	policySeed     []policyRow
-	policySeedErr  error
+	referenceOnce sync.Once
+	policySeed    []policyRow
+	centerSeed    []centerRow
+	referenceErr  error
 )
 
 type policyRow struct {
@@ -207,28 +225,36 @@ type policyRow struct {
 	effectiveTo              *time.Time
 }
 
-func restorePolicySeed(t *testing.T, pool *pgxpool.Pool) {
+type centerRow struct {
+	code, name, addressLine, city, region, timezone string
+	phone, email                                    *string
+	capacityPerSlot, slotMinutes                    int16
+	openingHours                                    []byte
+	isActive                                        bool
+}
+
+func restoreReferenceData(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
 
-	if policySeedErr != nil {
-		t.Fatalf("capture the policy seed: %v", policySeedErr)
+	if referenceErr != nil {
+		t.Fatalf("capture the reference seed: %v", referenceErr)
 	}
 	// A nil seed with no error means the capture never ran — `Truncate` is
 	// exported, so a caller who obtained a pool some other way can reach here
-	// first. Failing loudly matters: returning quietly would leave `policies`
-	// empty, which is the exact silent state this whole mechanism exists to
-	// prevent, and the symptom would surface in an unrelated test.
-	if policySeed == nil {
-		t.Fatal("the policy seed was never captured — call testsupport.Pool(t) rather than Truncate directly")
+	// first. Failing loudly matters: returning quietly would leave the reference
+	// tables in whatever state the last test left them, which is the silent
+	// cross-test coupling this exists to prevent.
+	if policySeed == nil || centerSeed == nil {
+		t.Fatal("the reference seed was never captured — call testsupport.Pool(t) rather than Truncate directly")
 	}
 
-	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM policies`).Scan(&n); err != nil {
-		t.Fatalf("count policies: %v", err)
-	}
-	if n > 0 {
-		return
+	// Both are rebuilt from scratch rather than repaired, so a test that ADDED a
+	// row is undone as well as one that edited a row. Identity columns reassign
+	// ids; nothing depends on a specific one, because the fixtures look centres
+	// up by code.
+	if _, err := pool.Exec(ctx, `DELETE FROM policies`); err != nil {
+		t.Fatalf("clear policies: %v", err)
 	}
 	for _, r := range policySeed {
 		if _, err := pool.Exec(ctx, `
@@ -238,15 +264,75 @@ func restorePolicySeed(t *testing.T, pool *pgxpool.Pool) {
 			t.Fatalf("restore policy %s: %v", r.key, err)
 		}
 	}
+
+	// Centres are repaired in place and matched by code, NOT deleted and
+	// reinserted. `storage_locations.center_id` is `ON DELETE RESTRICT` and
+	// `storage_locations` is itself seed data this does not truncate, so a
+	// wholesale delete fails on the foreign key. Updating also keeps the ids
+	// stable, which costs nothing and surprises nobody.
+	codes := make([]string, 0, len(centerSeed))
+	for _, c := range centerSeed {
+		codes = append(codes, c.code)
+		if _, err := pool.Exec(ctx, `
+			UPDATE donation_centers
+			   SET name = $2, address_line = $3, city = $4, region = $5, phone = $6, email = $7,
+			       capacity_per_slot = $8, slot_minutes = $9, opening_hours = $10,
+			       timezone = $11, is_active = $12
+			 WHERE code = $1`,
+			c.code, c.name, c.addressLine, c.city, c.region, c.phone, c.email,
+			c.capacityPerSlot, c.slotMinutes, c.openingHours, c.timezone, c.isActive); err != nil {
+			t.Fatalf("restore centre %s: %v", c.code, err)
+		}
+	}
+	// A centre a test CREATED is removed, so the next test sees the seeded
+	// estate and nothing else. These are safe to delete: nothing seeded points
+	// at them, and everything a test attached has just been truncated.
+	if _, err := pool.Exec(ctx,
+		`DELETE FROM donation_centers WHERE code <> ALL($1::text[])`, codes); err != nil {
+		t.Fatalf("remove test-created centres: %v", err)
+	}
 }
 
-// capturePolicySeed reads the seeded policy rows once, on the first Pool() of a
-// test binary — which is the only moment the table is guaranteed to still hold
-// them, because the Truncate immediately after it is what removes them.
-func capturePolicySeed(pool *pgxpool.Pool) {
-	policySeedOnce.Do(func() {
-		policySeed, policySeedErr = readPolicies(context.Background(), pool)
+// captureReferenceData reads the seeded reference rows once, on the first Pool()
+// of a test binary — the only moment they are guaranteed untouched, because the
+// Truncate immediately after it is what disturbs them.
+func captureReferenceData(pool *pgxpool.Pool) {
+	referenceOnce.Do(func() {
+		ctx := context.Background()
+		policySeed, referenceErr = readPolicies(ctx, pool)
+		if referenceErr != nil {
+			return
+		}
+		centerSeed, referenceErr = readCenters(ctx, pool)
 	})
+}
+
+func readCenters(ctx context.Context, pool *pgxpool.Pool) ([]centerRow, error) {
+	rows, err := pool.Query(ctx, `
+		SELECT code, name, address_line, city, region, phone, email,
+		       capacity_per_slot, slot_minutes, opening_hours, timezone, is_active
+		FROM donation_centers ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []centerRow
+	for rows.Next() {
+		var c centerRow
+		if err := rows.Scan(&c.code, &c.name, &c.addressLine, &c.city, &c.region, &c.phone, &c.email,
+			&c.capacityPerSlot, &c.slotMinutes, &c.openingHours, &c.timezone, &c.isActive); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("the freshly migrated database has no donation centres — migration 000012 did not seed")
+	}
+	return out, nil
 }
 
 func readPolicies(ctx context.Context, pool *pgxpool.Pool) ([]policyRow, error) {

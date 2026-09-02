@@ -32,13 +32,13 @@ func eligFor(pool *pgxpool.Pool, q *store.Queries) *service.EligibilityService {
 
 func newRequestService(pool *pgxpool.Pool) *service.DonationRequestService {
 	q := store.New(pool)
-	return service.NewDonationRequestService(pool, q, eligFor(pool, q))
+	return service.NewDonationRequestService(pool, q, eligFor(pool, q), service.NewCenterService(q))
 }
 
 func TestApproveKeepsTheRequestAndLinksTheAppointment(t *testing.T) {
 	pool := testsupport.Pool(t)
 	q := store.New(pool)
-	svc := service.NewDonationRequestService(pool, q, eligFor(pool, q))
+	svc := service.NewDonationRequestService(pool, q, eligFor(pool, q), service.NewCenterService(q))
 
 	center := testsupport.CenterID(t, pool)
 	donorID := testsupport.NewDonor(t, pool, "approve@example.test", "Approve Donor")
@@ -79,7 +79,7 @@ func TestApproveKeepsTheRequestAndLinksTheAppointment(t *testing.T) {
 func TestConcurrentApprovalsCreateExactlyOneAppointment(t *testing.T) {
 	pool := testsupport.Pool(t)
 	q := store.New(pool)
-	svc := service.NewDonationRequestService(pool, q, eligFor(pool, q))
+	svc := service.NewDonationRequestService(pool, q, eligFor(pool, q), service.NewCenterService(q))
 
 	center := testsupport.CenterID(t, pool)
 	donorID := testsupport.NewDonor(t, pool, "race@example.test", "Race Donor")
@@ -139,7 +139,7 @@ func TestConcurrentApprovalsCreateExactlyOneAppointment(t *testing.T) {
 func TestOnlyOneOpenRequestPerDonor(t *testing.T) {
 	pool := testsupport.Pool(t)
 	q := store.New(pool)
-	svc := service.NewDonationRequestService(pool, q, eligFor(pool, q))
+	svc := service.NewDonationRequestService(pool, q, eligFor(pool, q), service.NewCenterService(q))
 
 	center := testsupport.CenterID(t, pool)
 	donorID := testsupport.NewDonor(t, pool, "double@example.test", "Double Booker")
@@ -334,7 +334,7 @@ func TestListIsNarrowedByScope(t *testing.T) {
 func TestAppointmentListScopeAndFilter(t *testing.T) {
 	pool := testsupport.Pool(t)
 	q := store.New(pool)
-	reqSvc := service.NewDonationRequestService(pool, q, eligFor(pool, q))
+	reqSvc := service.NewDonationRequestService(pool, q, eligFor(pool, q), service.NewCenterService(q))
 	apptSvc := service.NewAppointmentService(pool, q)
 	ctx := context.Background()
 
@@ -385,7 +385,7 @@ func TestGetAppointmentAndRequestNotFound(t *testing.T) {
 	if _, err := service.NewAppointmentService(pool, q).Get(context.Background(), 999999); !errors.Is(err, service.ErrNotFound) {
 		t.Errorf("missing appointment = %v, want ErrNotFound", err)
 	}
-	if _, err := service.NewDonationRequestService(pool, q, eligFor(pool, q)).Get(context.Background(), 999999); !errors.Is(err, service.ErrNotFound) {
+	if _, err := service.NewDonationRequestService(pool, q, eligFor(pool, q), service.NewCenterService(q)).Get(context.Background(), 999999); !errors.Is(err, service.ErrNotFound) {
 		t.Errorf("missing request = %v, want ErrNotFound", err)
 	}
 }

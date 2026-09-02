@@ -264,6 +264,19 @@ func TestTheApprovalGateDoesNotHoldTwoConnections(t *testing.T) {
 
 	// More concurrent approvals than a small pool has connections.
 	const n = 12
+
+	// Widen the slot to hold them all. Without this the test measures WI-24's
+	// capacity constraint instead of the thing it is named for: the seeded
+	// centre holds four, so eight approvals would be correctly refused and the
+	// deadlock this guards against would go unexercised.
+	//
+	// It is a better test for the widening, not a weaker one — twelve concurrent
+	// inserts into a twelve-seat slot must come out as twelve DISTINCT seats,
+	// which is the seat allocator under real contention.
+	if _, err := pool.Exec(ctx,
+		`UPDATE donation_centers SET capacity_per_slot = $1 WHERE id = $2`, n, center); err != nil {
+		t.Fatalf("widen the slot: %v", err)
+	}
 	type booking struct {
 		id       int32
 		donorID  int64
@@ -304,6 +317,16 @@ func TestTheApprovalGateDoesNotHoldTwoConnections(t *testing.T) {
 			t.Fatalf("only %d of %d approvals finished in 60s — the gate is holding a second "+
 				"connection while inside its own transaction", i, n)
 		}
+	}
+
+	// Twelve appointments, twelve distinct seats. A duplicate would mean the
+	// unique index is not doing the work; a gap would mean the allocator skipped
+	// a free seat under contention.
+	seats := testsupport.CountRows(t, pool, `
+		SELECT count(DISTINCT slot_seat) FROM appointments
+		 WHERE center_id = $1 AND status <> 'cancelled'`, center)
+	if seats != n {
+		t.Errorf("%d distinct seats across %d appointments — the allocator collided or skipped", seats, n)
 	}
 }
 

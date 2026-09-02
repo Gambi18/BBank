@@ -848,3 +848,113 @@ func TestFR65_StaffDonorAccessIsConsistent(t *testing.T) {
 		t.Errorf("a donor read another donor's record: %d, want 404", got.status)
 	}
 }
+
+// WI-24: the centre directory is PUBLIC and writing to it is admin-only.
+//
+// TRD §6.5 marks `GET /api/v1/centers` as `pub` and `POST`/`PATCH` as `admin`.
+// A route table is a claim until something drives it: `WI-30` exists because a
+// permission the matrix granted correctly was mounted on the wrong handler, and
+// this is a new handler with a public route on it — the exact shape that went
+// wrong before.
+func TestWI24_CentreDirectoryIsPublicAndWritesAreAdminOnly(t *testing.T) {
+	h := newHarness(t)
+	center := testsupport_CenterID(t, h)
+	_ = center
+
+	// Anonymous can read the directory.
+	anon := h.do(t, http.MethodGet, "/api/v1/centers", "", "")
+	if anon.status != http.StatusOK {
+		t.Fatalf("anonymous GET /centers = %d, want 200 (TRD §6.5 marks it pub)", anon.status)
+	}
+	if !strings.Contains(anon.body, `"data"`) {
+		t.Errorf("the public directory is not enveloped: %s", truncate(anon.body))
+	}
+
+	// ...and cannot write to it.
+	body := `{"code":"ANON","name":"Anonymous Centre","address_line":"1 Road","city":"Douala","region":"Littoral"}`
+	if got := h.do(t, http.MethodPost, "/api/v1/centers", "", body); got.status == http.StatusCreated {
+		t.Fatal("an anonymous caller created a donation centre")
+	}
+
+	// A donor may read a centre but not create one — §7.6 gives every role R and
+	// only admin C.
+	h.donor(t, "centrereader@example.test", "Centre Reader")
+	donor := h.token(t, "centrereader@example.test")
+	if got := h.do(t, http.MethodGet, "/api/v1/centers", donor, ""); got.status != http.StatusOK {
+		t.Errorf("a donor cannot read the centre directory: %d", got.status)
+	}
+	if got := h.do(t, http.MethodPost, "/api/v1/centers", donor, body); got.status != http.StatusForbidden {
+		t.Errorf("a donor creating a centre = %d, want 403", got.status)
+	}
+
+	// Staff neither.
+	staffCenter := testsupport_CenterID(t, h)
+	h.user(t, "centrestaff@example.test", "staff", &staffCenter)
+	staff := h.token(t, "centrestaff@example.test")
+	if got := h.do(t, http.MethodPost, "/api/v1/centers", staff, body); got.status != http.StatusForbidden {
+		t.Errorf("staff creating a centre = %d, want 403", got.status)
+	}
+
+	// An admin can.
+	h.user(t, "centreadmin@example.test", "admin", nil)
+	admin := h.token(t, "centreadmin@example.test")
+	created := h.do(t, http.MethodPost, "/api/v1/centers", admin, body)
+	if created.status != http.StatusCreated {
+		t.Fatalf("an admin creating a centre = %d: %s", created.status, truncate(created.body))
+	}
+}
+
+// A deactivated centre disappears from the public directory but stays readable
+// by id — the history has to remain reachable (FR-14).
+func TestWI24_DeactivatedCentresLeaveThePublicDirectory(t *testing.T) {
+	h := newHarness(t)
+	center := testsupport_CenterID(t, h)
+
+	h.user(t, "estateadmin@example.test", "admin", nil)
+	admin := h.token(t, "estateadmin@example.test")
+
+	before := h.do(t, http.MethodGet, "/api/v1/centers", "", "")
+	if !strings.Contains(before.body, `"MAIN"`) {
+		t.Fatalf("the seeded centre is missing from the directory: %s", truncate(before.body))
+	}
+
+	if got := h.do(t, http.MethodPatch, "/api/v1/centers/"+itoa64(center), admin, `{"is_active":false}`); got.status != http.StatusOK {
+		t.Fatalf("deactivate = %d: %s", got.status, truncate(got.body))
+	}
+
+	after := h.do(t, http.MethodGet, "/api/v1/centers", "", "")
+	if strings.Contains(after.body, `"MAIN"`) {
+		t.Error("a deactivated centre is still in the public directory — that sends people to a locked door")
+	}
+	// An admin can still find it, or reopening would be impossible through the API.
+	admins := h.do(t, http.MethodGet, "/api/v1/centers?include_inactive=true", admin, "")
+	if !strings.Contains(admins.body, `"MAIN"`) {
+		t.Error("an admin cannot see the centre they closed")
+	}
+	// And it is still readable by id.
+	if got := h.do(t, http.MethodGet, "/api/v1/centers/"+itoa64(center), admin, ""); got.status != http.StatusOK {
+		t.Errorf("a closed centre is unreadable by id: %d", got.status)
+	}
+}
+
+// The slots endpoint is `auth`, not public: how full a centre is on Tuesday is
+// operational detail.
+func TestWI24_SlotsRequireASession(t *testing.T) {
+	h := newHarness(t)
+	center := testsupport_CenterID(t, h)
+	path := "/api/v1/centers/" + itoa64(center) + "/slots?date=2026-10-05"
+
+	if got := h.do(t, http.MethodGet, path, "", ""); got.status != http.StatusUnauthorized {
+		t.Errorf("anonymous GET slots = %d, want 401", got.status)
+	}
+
+	h.donor(t, "slotreader@example.test", "Slot Reader")
+	donor := h.token(t, "slotreader@example.test")
+	got := h.do(t, http.MethodGet, path, donor, "")
+	if got.status != http.StatusOK {
+		t.Fatalf("a donor reading slots = %d: %s", got.status, truncate(got.body))
+	}
+	if !strings.Contains(got.body, `"data"`) {
+		t.Errorf("the slots response is not enveloped: %s", truncate(got.body))
+	}
+}
