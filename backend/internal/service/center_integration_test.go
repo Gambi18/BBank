@@ -505,3 +505,32 @@ func TestWI24_LoweringCapacityKeepsExistingAppointments(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// A booking is for a day that has not happened.
+//
+// Nothing refused a past date before, and the eligibility gate would not: "were
+// you eligible last Tuesday?" is a well-formed question it answers happily. The
+// request would then sit in the queue for a day staff cannot schedule.
+func TestWI24_APastDateIsRefused(t *testing.T) {
+	_, requests, pool := centerSetup(t)
+	ctx := context.Background()
+	center := testsupport.CenterID(t, pool)
+	donorID := newAdultDonor(t, pool, "timetraveller@example.test")
+
+	yesterday := time.Now().AddDate(0, 0, -1)
+	if _, err := requests.Create(ctx, service.CreateRequestParams{
+		DonorID: donorID, CenterID: &center, PreferredDate: &yesterday,
+	}); !errors.Is(err, service.ErrInvalid) {
+		t.Errorf("a booking for yesterday = %v, want ErrInvalid", err)
+	}
+
+	// Today is still fine — a walk-in booked the same morning is ordinary, and
+	// the comparison is on the date rather than the instant so the hour of the
+	// day cannot change the answer.
+	today := time.Now()
+	if _, err := requests.Create(ctx, service.CreateRequestParams{
+		DonorID: donorID, CenterID: &center, PreferredDate: &today,
+	}); err != nil {
+		t.Errorf("a same-day booking was refused: %v", err)
+	}
+}

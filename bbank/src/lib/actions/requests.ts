@@ -14,12 +14,29 @@ import { flash } from '../flash'
  * else's name by editing a form field. The old version sent
  * `{donor_id: parseInt(id)}` read straight out of the URL.
  */
-export async function requestAppointment() {
+export async function requestAppointment(formData?: FormData) {
     const session = await requireSession()
     const back = `/donor/${session.userId}`
 
+    // A centre and a preferred date, when the form offers them. Both are
+    // optional at the API, which defaults to the main centre a week out — so an
+    // older form that posts nothing keeps working, and this stays additive.
+    //
+    // The donor id is still absent, and deliberately: the API takes it from the
+    // `sub` claim (WI-20), so a donor cannot raise a request in someone else's
+    // name by editing a field. Adding a centre does not change that — a centre
+    // is a place, not an identity.
+    const body: Record<string, unknown> = {}
+    const centerId = formData?.get('center_id')
+    if (typeof centerId === 'string' && centerId !== '') {
+        const parsed = Number(centerId)
+        if (Number.isFinite(parsed)) body.center_id = parsed
+    }
+    const preferred = formData?.get('preferred_date')
+    if (typeof preferred === 'string' && preferred !== '') body.preferred_date = preferred
+
     try {
-        await apiPost('/api/v1/donation-requests', {})
+        await apiPost('/api/v1/donation-requests', body)
     } catch (e) {
         return redirect(flash(back, { error: describe(e, 'Failed to request an appointment') }))
     }

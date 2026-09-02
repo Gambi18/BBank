@@ -114,6 +114,7 @@ schema doc; route paths by the user journey. Other documents cite, never redefin
 - [x] Donation centres: CRUD, opening hours, per-slot capacity (`WI-24`)
 - [x] **Over-booking impossible under concurrent approvals** — a constraint, not a check (`WI-24`)
 - [x] Deactivating a centre stops new bookings and preserves history (`WI-24`)
+- [x] A donor can choose a centre and a preferred date when booking (`WI-24`)
 - [ ] Donation intervals for `apheresis_plasma` and `double_red_cell` — clinical values needed
 - [ ] Session/JWT issuance from the backend (currently the frontend owns the cookie)
 
@@ -306,6 +307,16 @@ _Resolved since this list was written:_ open CORS (now an explicit allowlist wit
   not guessed at: `apheresis_plasma` and `double_red_cell` have no seeded donation interval, so
   booking either is refused with a 422 naming the gap — those are clinical constants, and inventing
   two of them in passing is not a thing to do. The `/admin/centers` console is `WI-89`'s.
+
+  **Follow-up, same day:** the donor booking form gained a centre select and a preferred date, both
+  optional — a donor who just wants to give blood presses the button and the API picks the main
+  centre a week out, and requiring either would put two decisions in front of the commonest action
+  on that page. The select is hidden when there is only one centre, because a choice of one is not a
+  choice. Adding a `min` date to the input turned out to be a lint error (`Date.now` during a server
+  render), and chasing it found something better: **nothing refused a booking for a past date.** The
+  eligibility gate answers "were you eligible last Tuesday?" perfectly happily, so the request would
+  have sat in the queue for a day staff cannot schedule. Refused in the service now, compared on the
+  date so a same-day walk-in still books.
 - **2026-09-02** — **`WI-25` and `WI-26`: clinical policy becomes data, and `FR-19`'s deferral gate
   goes in. Plus the empty `policies` table nothing had noticed.**
 

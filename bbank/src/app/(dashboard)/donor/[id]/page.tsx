@@ -6,6 +6,7 @@ import {
 import { getDonor, bloodType } from '@/lib/data/donors'
 import { listAppointments, appointmentBadge } from '@/lib/data/appointments'
 import { requestAppointment } from '@/lib/actions/requests'
+import { listCenters } from '@/lib/data/centers'
 
 const fmtDate = (d: string) =>
     d ? new Date(d).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : null
@@ -26,6 +27,10 @@ async function DonorDetails({ params }: { params: Promise<{ id: string }> }) {
     // viewing someone else, that meant somebody else's list entirely. The API
     // ANDs the filter with the caller's scope, so it can only ever narrow.
     const appointments = await listAppointments(Number(id))
+
+    // The centres a donor may choose between. One centre means no choice worth
+    // showing, so the select is hidden and the API's default applies.
+    const centers = await listCenters()
 
     const firstName = donorData.full_name?.split(' ')[0] || 'Donor'
     const profileIncomplete = !donorData.blood_group || !donorData.contact_phone
@@ -139,7 +144,45 @@ async function DonorDetails({ params }: { params: Promise<{ id: string }> }) {
                             </li>
                         )}
                     </ul>
-                    <form action={requestAppointment} className="mt-6">
+                    {/*
+                      * The centre and date are OPTIONAL (WI-24). A donor who
+                      * just wants to give blood presses the button and the API
+                      * picks the main centre a week out; one who cares which
+                      * branch or which week says so. Making either required
+                      * would put two decisions in front of the commonest action
+                      * on this page.
+                      *
+                      * Only active centres are listed — the API filters them —
+                      * because offering a closed one sends somebody to a locked
+                      * door.
+                      */}
+                    <form action={requestAppointment} className="mt-6 space-y-3">
+                        {centers.length > 1 && (
+                            <div className="field">
+                                <label htmlFor="center_id" className="text-xs text-zinc-500 uppercase tracking-wider">
+                                    Centre
+                                </label>
+                                <select id="center_id" name="center_id" defaultValue="" className="w-full">
+                                    <option value="">Nearest available</option>
+                                    {centers.map((c) => (
+                                        <option key={c.id} value={c.id}>
+                                            {c.name} — {c.city}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                        )}
+                        <div className="field">
+                            <label htmlFor="preferred_date" className="text-xs text-zinc-500 uppercase tracking-wider">
+                                Preferred date <span className="normal-case text-zinc-400">(optional)</span>
+                            </label>
+                            <input
+                                id="preferred_date"
+                                name="preferred_date"
+                                type="date"
+                                className="w-full"
+                            />
+                        </div>
                         <button type="submit" className='btn btn-primary w-full btn-lg pulse-ring'>
                             Request appointment <FaArrowRight className="text-sm" />
                         </button>

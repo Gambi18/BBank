@@ -160,6 +160,17 @@ func (s *DonationRequestService) Create(ctx context.Context, p CreateRequestPara
 	if p.PreferredDate != nil {
 		on = *p.PreferredDate
 	}
+
+	// A booking is for a day that has not happened.
+	//
+	// Nothing refused a past date before: the eligibility gate would evaluate it
+	// perfectly happily — "were you eligible last Tuesday?" is a well-formed
+	// question — and the request would sit in the queue for a day staff cannot
+	// schedule. Compared on the DATE, not the instant, so "today" is still a
+	// valid same-day booking.
+	if startOfDay(on).Before(startOfDay(time.Now())) {
+		return zero, fmt.Errorf("%w: a donation cannot be requested for a date in the past", ErrInvalid)
+	}
 	proc := p.Procedure
 	if proc == "" {
 		proc = domain.ProcedureWholeBlood
@@ -224,6 +235,14 @@ func (s *DonationRequestService) Create(ctx context.Context, p CreateRequestPara
 		return zero, fmt.Errorf("create donation request: %w", err)
 	}
 	return row, nil
+}
+
+// startOfDay drops the clock, keeping the location — the same reasoning as the
+// domain's: a booking is counted in whole days, so the answer must not depend on
+// what time of day the request arrived.
+func startOfDay(t time.Time) time.Time {
+	y, m, d := t.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, t.Location())
 }
 
 // defaultBookingLeadDays mirrors the `CURRENT_DATE + 7` default in
